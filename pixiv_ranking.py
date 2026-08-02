@@ -4,6 +4,7 @@ Pixiv 랭킹 이미지 위젯 플러그인 (BookOasis metadata plugin)
 
 - 대시보드에 pixiv 일간/주간/월간 랭킹 이미지를 카드 형태로 노출합니다.
 - PHPSESSID(pixiv 로그인 세션 쿠키)를 플러그인 설정에서 입력해야 동작합니다.
+- 외부 패키지(requests) 의존성 없이 파이썬 표준 라이브러리(urllib)만 사용합니다.
 
 주의:
 - pixiv 이용약관상 대량 크롤링/재배포는 금지되어 있으니 개인 열람용으로만 사용하십시오.
@@ -11,8 +12,11 @@ Pixiv 랭킹 이미지 위젯 플러그인 (BookOasis metadata plugin)
   코어 수정 없이 plugins/metadata/pixiv_ranking/ 아래 코드만으로 동작합니다.
 """
 
+import json
 import re
-import requests
+import urllib.request
+import urllib.error
+import urllib.parse
 
 from plugins.metadata.base import BaseMetadataProvider
 
@@ -83,10 +87,9 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "show_sample_update_button": True,
     }
 
-    _headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.pixiv.net/",
-    }
+    _USER_AGENT = "Mozilla/5.0"
+    _REFERER = "https://www.pixiv.net/"
+    _TIMEOUT = 10
 
     # ---------------------------------------------------------------
     # 코어 필수 계약
@@ -108,8 +111,20 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             return {"success": False, "error": str(e)}
 
     # ---------------------------------------------------------------
-    # 내부 구현
+    # 내부 구현 (urllib 기반, 외부 패키지 불필요)
     # ---------------------------------------------------------------
+    def _http_get(self, url, cookies=None):
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", self._USER_AGENT)
+        req.add_header("Referer", self._REFERER)
+        if cookies:
+            cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+            req.add_header("Cookie", cookie_header)
+
+        with urllib.request.urlopen(req, timeout=self._TIMEOUT) as res:
+            charset = res.headers.get_content_charset() or "utf-8"
+            return res.status, res.read().decode(charset, errors="replace")
+
     def _fetch_items(self, db_type, limit=10):
         cfg = self.get_plugin_config(db_type, default={})
         phpsessid = cfg.get("PHPSESSID")
@@ -144,15 +159,15 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         return {"success": True, "items": items}
 
     def _get_ranking_illust_ids(self, mode, cookies, limit):
-        url = "https://www.pixiv.net/ranking.php"
-        params = {"mode": mode}
+        params = urllib.parse.urlencode({"mode": mode})
+        url = f"https://www.pixiv.net/ranking.php?{params}"
 
-        res = requests.get(
-            url, params=params, headers=self._headers, cookies=cookies, timeout=10
-        )
-        res.raise_for_status()
+        try:
+            status, body = self._http_get(url, cookies=cookies)
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"랭킹 페이지 요청 실패: {e}")
 
-        ids = re.findall(r"/artworks/(\d+)", res.text)
+        ids = re.findall(r"/artworks/(\d+)", body)
         seen = set()
         ordered_ids = []
         for x in ids:
@@ -165,10 +180,16 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
 
     def _get_illust_detail(self, illust_id, cookies):
         url = f"https://www.pixiv.net/ajax/illust/{illust_id}"
-        res = requests.get(url, headers=self._headers, cookies=cookies, timeout=10)
-        if res.status_code != 200:
+        try:
+            status, body = self._http_get(url, cookies=cookies)
+        except urllib.error.URLError:
             return None
-        data = res.json()
+
+        try:
+            data = json.loads(body)
+        except (ValueError, TypeError):
+            return None
+
         return data.get("body")
 
 
