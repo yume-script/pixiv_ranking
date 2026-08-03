@@ -50,7 +50,17 @@ def _thumb_to_original(thumb_url):
     original = original.replace("_master1200", "")
     return original
 
+class MyCategoryPlugin(BaseMetadataProvider):
+    id = "pixiv_ranking"
+    name = "Pixiv 랭킹"
+    is_searchable = False
 
+    category_tab = {
+        "title": "Pixiv 랭킹",
+        "icon": "fa-solid fa-chart-line",
+        "order": 80
+    }
+  
 class PixivRankingMetadataProvider(BaseMetadataProvider):
     id = "pixiv_ranking"
     name = "Pixiv 랭킹"
