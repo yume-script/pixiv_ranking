@@ -10,9 +10,11 @@ Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
    반드시 서버 사이드에서 중계해야 함)
 
 주의:
-- items의 키 이름(title/subtitle/image/link_url 등)은 BookOasis 프론트엔드가
-  카드 렌더링 시 기대하는 실제 필드명에 맞춰 조정이 필요할 수 있음.
-  (예: stats_dashboard 플러그인의 반환 스키마와 비교해서 맞출 것)
+- 코어 대시보드 카드 렌더러(공통 데스크 그리드)가 실제로 읽는 필드는
+  cover / title / author / publisher / link 입니다.
+  (random_gallery 예제 플러그인 소스로 확인됨: https://github.com/yume-script/random_gallery)
+  다른 렌더러가 다른 키를 참조할 경우를 대비해 image/image_url/url 등의
+  별칭 필드도 함께 채워서 반환합니다.
 """
 
 import base64
@@ -161,14 +163,25 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             page_url = f"https://www.pixiv.net/artworks/{illust_id}"
             thumb_url = entry.get("url")
             image_data_uri = self._fetch_thumb_data_uri(thumb_url, session_id)
+            title = entry.get("title")
+            rank = entry.get("rank")
+            display_title = f"#{rank} {title}" if rank else title
+            # 코어 대시보드 카드 렌더러가 실제로 읽는 필드: cover/title/author/publisher/link
+            # (random_gallery 플러그인 소스로 확인됨)
             return idx, {
-                "title": entry.get("title"),
-                "subtitle": entry.get("user_name"),
-                "link_url": page_url,
+                "cover": image_data_uri,
+                "title": display_title,
+                "author": entry.get("user_name"),
+                "publisher": "Pixiv",
+                "link": page_url,
+                # 다른 렌더러 대응용 별칭 (혹시 다른 키를 참조하는 경우 대비)
                 "image": image_data_uri,
+                "image_url": image_data_uri,
+                "url": page_url,
+                "link_url": page_url,
+                "rank": rank,
                 # 참고용 원본 이미지 URL 추정치 (png 원본이면 실패할 수 있음)
                 "original_url_guess": _thumb_to_original(thumb_url),
-                "rank": entry.get("rank"),
             }
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_THUMBS) as pool:
