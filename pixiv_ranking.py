@@ -1,215 +1,206 @@
 # -*- coding: utf-8 -*-
-from urllib.parse import urlparse
-import urllib.request
+"""
+Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
+
+- search / apply: 검색형 메타데이터 기능은 사용하지 않음 (대시보드 전용)
+- dashboard_widget + get_dashboard_data: 픽시브 랭킹 TOP N을 카드로 노출
+- 이미지: 로컬 저장 없이, 요청 시점에 서버가 Referer 헤더를 붙여
+  픽시브에서 직접 받아온 뒤 base64 데이터 URI로 응답에 포함시켜 프록시.
+  (브라우저가 i.pximg.net에 직접 요청하면 Referer 누락으로 403이 나므로
+   반드시 서버 사이드에서 중계해야 함)
+
+주의:
+- items의 키 이름(title/subtitle/image/link_url 등)은 BookOasis 프론트엔드가
+  카드 렌더링 시 기대하는 실제 필드명에 맞춰 조정이 필요할 수 있음.
+  (예: stats_dashboard 플러그인의 반환 스키마와 비교해서 맞출 것)
+"""
+
+import base64
 import json
-import logging
-import sys
+import re
+import urllib.request
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Flask/플러그인 베이스는 BookOasis 앱 안에서만 존재합니다.
-# 이 파일을 `python pixiv_ranking.py --mode daily --content all` 처럼
-# 단독 CLI로도 실행/테스트할 수 있도록 없으면 더미로 대체합니다.
-try:
-    from plugins.metadata.base import BaseMetadataProvider
-    from flask import Response, request, jsonify
-    _FLASK_AVAILABLE = True
-except ImportError:
-    _FLASK_AVAILABLE = False
+from plugins.metadata.base import BaseMetadataProvider
 
-    class BaseMetadataProvider:  # CLI 단독 실행용 더미 베이스
-        pass
-
-# 로그 설정 (중복 핸들러 방지: 리로드 시 로그가 중복 출력되는 것을 막음)
-logger = logging.getLogger("PixivPlugin")
-logger.setLevel(logging.DEBUG)
-if not logger.handlers:
-    _handler = logging.StreamHandler()
-    _handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
-    logger.addHandler(_handler)
-    logger.propagate = False
-
-# 이미지 프록시가 허용할 호스트 화이트리스트 (오픈 프록시로 악용되는 것을 방지)
-ALLOWED_PROXY_HOSTS = ("i.pximg.net", "pixiv.net", "www.pixiv.net")
-
-# Pixiv용 User-Agent (없으면 요청이 차단됨)
-PIXIV_USER_AGENT = (
+USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 )
+PIXIV_REFERER = "https://www.pixiv.net/"
+
+# 동시에 받아올 썸네일 최대 개수 (네트워크 부하 제한)
+MAX_CONCURRENT_THUMBS = 5
+# 개별 요청 타임아웃(초)
+REQUEST_TIMEOUT = 8
 
 
-def fetch_pixiv_ranking(mode, content):
+def _thumb_to_original(thumb_url):
     """
-    Pixiv 랭킹 JSON을 가져와 contents 리스트를 반환하는 공통 함수.
-    - 플러그인의 pixiv_get() (Flask 라우트)
-    - 단독 CLI 실행 (아래 __main__ 블록)
-    양쪽에서 공통으로 사용합니다.
+    https://i.pximg.net/c/480x960/img-master/img/2026/08/02/14/53/33/147926455_p0_master1200.jpg
+    ==> https://i.pximg.net/img-original/img/2026/08/02/14/53/33/147926455_p0.jpg
+    (원본이 png인 작품은 이 변환만으로 404가 날 수 있음 - 참고용으로만 사용)
     """
-    url = f"https://www.pixiv.net/ranking.php?mode={mode}&content={content}&format=json"
-    headers = {"User-Agent": PIXIV_USER_AGENT, "Referer": "https://www.pixiv.net/"}
-
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=10) as response:
-        raw_data = response.read().decode('utf-8')
-        data = json.loads(raw_data)
-        return data.get('contents', [])
+    if not thumb_url:
+        return thumb_url
+    original = re.sub(r"/c/\d+x\d+/img-master/", "/img-original/", thumb_url)
+    original = original.replace("_master1200", "")
+    return original
 
 
-class PixivRankingPlugin(BaseMetadataProvider):
-    """
-    Pixiv 랭킹을 카테고리 레벨 풀페이지로 보여주는 플러그인.
-
-    확인 완료 (서버 소스 대조 결과):
-    - `category_tab`은 실제 코어 계약입니다. services/metadata_factory.py가
-      getattr(target_class, 'category_tab', None)로 읽고, api/library.py의
-      /api/media/category-plugins가 사이드바 메뉴를 만들 때 사용합니다.
-      풀페이지 UI(index.html/style.css/script.js)는 /api/media/plugins/<id>/ui
-      가 JSON 번들로 내려줍니다. → 이 부분은 그대로 두면 정상 동작합니다.
-    - /api/media/dashboard/widgets/<id>/data 는 오직 get_dashboard_data(db_type, limit)
-      만 호출하며 type/limit 외 파라미터는 넘겨주지 않습니다. mode/content 같은
-      커스텀 파라미터가 필요하면 이 공용 엔드포인트로는 처리할 수 없습니다.
-    - 그래서 mode/content를 받는 실시간 조회, 이미지 프록시는
-      plugins/metadata/aladin_bestseller/aladin_bestseller.py 가 쓰는 것과
-      동일한 방식으로, 클래스 메서드가 아니라 **모듈 최상단에서 @app.route(...)**
-      로 직접 등록합니다 (아래 참고). `app`은 플러그인 로더가 모듈 네임스페이스에
-      미리 주입해두므로 import 없이 그대로 사용합니다.
-    """
-
+class PixivRankingMetadataProvider(BaseMetadataProvider):
     id = "pixiv_ranking"
-    name = "Pixiv 랭킹 뷰어"
+    name = "Pixiv 랭킹"
     is_searchable = False
-    config_schema = []
 
-    category_tab = {"title": "Pixiv 랭킹", "icon": "fa-solid fa-palette", "order": 90}
+    config_schema = [
+        {
+            "key": "PHPSESSID",
+            "label": "Pixiv 로그인 세션 (PHPSESSID)",
+            "type": "password",
+            "required": True,
+        },
+        {
+            "key": "MODE",
+            "label": "랭킹 모드",
+            "type": "select",
+            "default": "daily",
+            "options": [
+                {"value": "daily", "label": "일간 (daily)"},
+                {"value": "weekly", "label": "주간 (weekly)"},
+                {"value": "monthly", "label": "월간 (monthly)"},
+                {"value": "rookie", "label": "신인 (rookie)"},
+            ],
+        },
+        {
+            "key": "CONTENT",
+            "label": "콘텐츠 타입",
+            "type": "select",
+            "default": "all",
+            "options": [
+                {"value": "all", "label": "전체 (all)"},
+                {"value": "illust", "label": "일러스트 (illust)"},
+                {"value": "manga", "label": "만화 (manga)"},
+                {"value": "ugoira", "label": "우고이라 (ugoira)"},
+            ],
+        },
+    ]
 
+    # 자동 업데이트를 지원하려면 raw_base_url을 실제 호스팅 리포지토리로 바꿔서 사용
     update_manifest = {
-        "enabled": True,
+        "enabled": False,
         "provider": "github-raw",
-        "raw_base_url": "https://raw.githubusercontent.com/yume-script/pixiv_ranking/main",
-        "files": ["pixiv_ranking.py", "__init__.py", "index.html", "style.css", "script.js", "VERSION"],
+        "raw_base_url": "https://raw.githubusercontent.com/<org>/<repo>/<branch>/plugins/metadata/pixiv_ranking",
+        "files": ["pixiv_ranking.py", "__init__.py", "VERSION"],
         "version_file": "VERSION",
         "version_key": "plugin version",
-        "show_sample_update_button": True,
+        "show_sample_update_button": False,
     }
 
-    # ---------------------------------------------------------------
-    # 필수 계약 (guide_plugins.md 3장) — 이전 코드에 누락되어 있었음
-    # ---------------------------------------------------------------
+    dashboard_widget = {
+        "title": "Pixiv 랭킹",
+        "subtitle": "픽시브 실시간 랭킹",
+        "provider": "Pixiv",
+        "icon": "fa-solid fa-image",
+        "limit": 10,
+        "supported_types": ["general"],
+    }
+
+    # ---- 필수 계약 (대시보드 전용이라 실질 동작 없음) ----
     def search(self, db_type, query):
-        # 검색형(is_searchable) 플러그인이 아니므로 빈 결과만 반환
-        return {'success': True, 'items': []}
+        return []
 
     def apply(self, db_type, book_id, item_data):
-        return False, "이 플러그인은 카테고리 전용이며 메타데이터 적용 대상이 아닙니다."
+        return False, "대시보드 전용 플러그인입니다."
 
-    # ---------------------------------------------------------------
-    # (선택) 공통 데스크 위젯 계약 — /api/media/dashboard/widgets/<id>/data 가
-    # 호출합니다. category_tab 풀페이지는 아래의 커스텀 @app.route를 쓰므로
-    # 이 메서드는 "일반 대시보드 카드"로도 노출하고 싶을 때만 필요합니다.
-    # (원치 않으면 dashboard_widget 속성 자체를 지우면 됩니다.)
-    # ---------------------------------------------------------------
-    def get_dashboard_data(self, db_type, limit=10):
+    # ---- 내부 헬퍼 ----
+    def _get_headers(self, session_id, extra=None):
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Referer": PIXIV_REFERER,
+        }
+        if session_id:
+            headers["Cookie"] = f"PHPSESSID={session_id}"
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _fetch_ranking(self, session_id, mode, content, limit):
+        url = (
+            f"https://www.pixiv.net/ranking.php"
+            f"?mode={mode}&content={content}&format=json"
+        )
+        req = urllib.request.Request(url, headers=self._get_headers(session_id))
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        contents = data.get("contents", [])
+        return contents[:limit]
+
+    def _fetch_thumb_data_uri(self, thumb_url, session_id):
+        """썸네일을 다운로드해 base64 data URI로 변환 (로컬 저장 없음)."""
+        if not thumb_url:
+            return None
         try:
-            contents = fetch_pixiv_ranking('daily', 'all')[:limit]
-            items = [
-                {
-                    'title': c.get('title'),
-                    'author': c.get('user_name', ''),
-                    'publisher': '',
-                    'cover': c.get('url'),
-                    'link': c.get('url'),
-                }
-                for c in contents
+            req = urllib.request.Request(
+                thumb_url, headers=self._get_headers(session_id)
+            )
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                raw = resp.read()
+                content_type = resp.headers.get("Content-Type", "image/jpeg")
+            b64 = base64.b64encode(raw).decode("ascii")
+            return f"data:{content_type};base64,{b64}"
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+            return None
+
+    def _build_items(self, contents, session_id):
+        items = [None] * len(contents)
+
+        def _work(idx, entry):
+            illust_id = entry.get("illust_id")
+            page_url = f"https://www.pixiv.net/artworks/{illust_id}"
+            thumb_url = entry.get("url")
+            image_data_uri = self._fetch_thumb_data_uri(thumb_url, session_id)
+            return idx, {
+                "title": entry.get("title"),
+                "subtitle": entry.get("user_name"),
+                "link_url": page_url,
+                "image": image_data_uri,
+                # 참고용 원본 이미지 URL 추정치 (png 원본이면 실패할 수 있음)
+                "original_url_guess": _thumb_to_original(thumb_url),
+                "rank": entry.get("rank"),
+            }
+
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_THUMBS) as pool:
+            futures = [
+                pool.submit(_work, idx, entry) for idx, entry in enumerate(contents)
             ]
-            return {'success': True, 'items': items}
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+            for fut in as_completed(futures):
+                idx, item = fut.result()
+                items[idx] = item
 
+        return items
 
-# ---------------------------------------------------------------------
-# 커스텀 백엔드 엔드포인트 (plugins/metadata/aladin_bestseller/aladin_bestseller.py
-# 와 동일한 방식: 클래스 메서드가 아니라 모듈 최상단에서 @app.route(...)로 직접
-# 등록합니다. `app`은 플러그인 로더가 이 모듈을 로드할 때 네임스페이스에 미리
-# 주입해두므로 import 없이 그대로 사용합니다.
-#
-# script.js는 이 절대경로들을 그대로 fetch() 합니다:
-#   GET /api/dashboard/pixiv-ranking?mode=daily&content=all
-#   GET /api/dashboard/pixiv-ranking/image-proxy?url=<encoded>
-# ---------------------------------------------------------------------
-if _FLASK_AVAILABLE:
+    # ---- 대시보드 계약 ----
+    def get_dashboard_data(self, db_type, limit=10):
+        cfg = self.get_plugin_config(db_type, default={})
+        session_id = cfg.get("PHPSESSID")
+        mode = cfg.get("MODE", "daily")
+        content = cfg.get("CONTENT", "all")
 
-    @app.route('/api/dashboard/pixiv-ranking', methods=['GET'])
-    def get_pixiv_ranking_api():
-        mode = request.args.get('mode', 'daily')
-        content = request.args.get('content', 'all')
-        logger.info(f"[Pixiv] 요청 수신: mode={mode}, content={content}")
+        if not session_id:
+            return {
+                "success": False,
+                "error": "Pixiv 로그인 세션(PHPSESSID)이 설정되지 않았습니다.",
+            }
 
         try:
-            contents = fetch_pixiv_ranking(mode, content)
-            logger.info(f"[Pixiv] 총 {len(contents)}개 항목 추출 완료")
-            return jsonify({'success': True, 'items': contents})
-        except Exception as e:
-            logger.error(f"[Pixiv] 데이터 수신 중 오류 발생: {str(e)}")
-            return jsonify({'success': False, 'error': str(e)}), 500
+            contents = self._fetch_ranking(session_id, mode, content, limit)
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
+            return {"success": False, "error": f"랭킹 조회 실패: {e}"}
 
-    @app.route('/api/dashboard/pixiv-ranking/image-proxy', methods=['GET'])
-    def proxy_pixiv_image_api():
-        image_url = request.args.get('url')
-        if not image_url:
-            logger.warning("[Proxy] 이미지 URL이 비어있음")
-            return Response("No URL", status=400)
-
-        # 오픈 프록시 악용 방지: 화이트리스트에 없는 호스트는 차단
-        try:
-            host = urlparse(image_url).hostname or ""
-        except Exception:
-            host = ""
-        if not any(host == h or host.endswith("." + h) for h in ALLOWED_PROXY_HOSTS):
-            logger.warning(f"[Proxy] 허용되지 않은 호스트 요청 차단: {host}")
-            return Response("Forbidden host", status=403)
-
-        logger.info(f"[Proxy] 이미지 요청: {image_url}")
-        headers = {"User-Agent": PIXIV_USER_AGENT, "Referer": "https://www.pixiv.net/"}
-        try:
-            req = urllib.request.Request(image_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as res:
-                content = res.read()
-                content_type = res.headers.get('Content-Type', 'image/jpeg')
-                logger.debug(f"[Proxy] 이미지 수신 완료, 크기: {len(content)} bytes")
-                return Response(content, mimetype=content_type)
-        except Exception as e:
-            logger.error(f"[Proxy] 이미지 다운로드 실패: {str(e)}")
-            return Response(str(e), status=500)
-
-
-# ---------------------------------------------------------------------
-# CLI 단독 실행 (디버깅/테스트용)
-#
-# BookOasis 앱 없이도 이 파일 하나로 pixiv 랭킹을 직접 조회해볼 수 있습니다.
-# 사용법:
-#   python pixiv_ranking.py --mode daily --content all
-#   python pixiv_ranking.py --mode weekly --content illust
-#   python pixiv_ranking.py --mode monthly --content manga
-#
-# ⚠️ 참고: script.js가 브라우저에서 fetch()로 호출하는 건 위에서 @app.route로
-# 등록한 /api/dashboard/pixiv-ranking (Flask 라우트)입니다. 이 CLI 블록을
-# 서버가 실행하는 게 아니라, 순수하게 터미널에서 수동으로 pixiv 크롤링
-# 로직만 테스트하고 싶을 때 쓰는 용도입니다.
-# ---------------------------------------------------------------------
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Pixiv 랭킹 크롤러 (urllib 버전)")
-    parser.add_argument("--mode", required=True, help="daily, weekly, monthly, rookie 등")
-    parser.add_argument("--content", required=True, help="all, illust, manga, ugoira 등")
-    args = parser.parse_args()
-
-    try:
-        contents = fetch_pixiv_ranking(args.mode, args.content)
         if not contents:
-            print("데이터를 찾을 수 없습니다. mode/content 값을 확인하세요.")
-            sys.exit(0)
-        print(f"[{args.mode.upper()} / {args.content.upper()}] 랭킹 목록:")
-        for item in contents:
-            print(f"- {item.get('title')} | {item.get('url')}")
-    except Exception as e:
-        print(f"오류 발생: {e}")
+            return {"success": True, "items": []}
+
+        items = self._build_items(contents, session_id)
+        return {"success": True, "items": items}
