@@ -3,6 +3,16 @@ import urllib.parse
 import json
 import argparse
 import sys
+import re
+
+def to_original_url(thumb_url):
+    # https://i.pximg.net/c/480x960/img-master/img/2026/08/02/14/53/33/147926455_p0_master1200.jpg
+    # ==> https://i.pximg.net/img-original/img/2026/08/02/14/53/33/147926455_p0.jpg
+    if not thumb_url:
+        return thumb_url
+    original = re.sub(r'/c/\d+x\d+/img-master/', '/img-original/', thumb_url)
+    original = original.replace('_master1200', '')
+    return original
 # 사용범
 #python pixiv_get.py --mode daily --content all
 #python pixiv_get.py --mode weekly --content illust
@@ -39,7 +49,8 @@ def get_pixiv_ranking(mode, content):
                 illust_id = item.get('illust_id')
                 page_url = f"https://www.pixiv.net/artworks/{illust_id}"
                 thumb_url = item.get('url')
-                print(f"- {item.get('title')} | 작품: {page_url} | 썸네일: {thumb_url}")
+                original_url = to_original_url(thumb_url)
+                print(f"- {item.get('title')} | 작품: {page_url} | 원본: {original_url}")
             
     except Exception as e:
         print(f"오류 발생: {e}")
