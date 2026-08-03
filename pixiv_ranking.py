@@ -19,6 +19,7 @@ Pixiv 랭킹 이미지 위젯 플러그인 (BookOasis metadata plugin)
 """
 
 import base64
+import concurrent.futures
 import json
 import logging
 import re
@@ -74,10 +75,10 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         {"key": "SHOW_CONTENT_ILLUST", "label": "일러스트 포함", "type": "checkbox", "default": False},
         {"key": "SHOW_CONTENT_UGOIRA", "label": "우고이라 포함", "type": "checkbox", "default": False},
         {"key": "SHOW_CONTENT_MANGA", "label": "만화 포함", "type": "checkbox", "default": False},
-        # 랭킹 기간/종류
+        # 랭킹 기간/종류 (기본은 '일간'만 켜서 빠르게 로드되도록 함 - 여러 개 켤수록 느려짐)
         {"key": "SHOW_DAILY", "label": "일간 랭킹 표시", "type": "checkbox", "default": True},
-        {"key": "SHOW_WEEKLY", "label": "주간 랭킹 표시", "type": "checkbox", "default": True},
-        {"key": "SHOW_MONTHLY", "label": "월간 랭킹 표시", "type": "checkbox", "default": True},
+        {"key": "SHOW_WEEKLY", "label": "주간 랭킹 표시", "type": "checkbox", "default": False},
+        {"key": "SHOW_MONTHLY", "label": "월간 랭킹 표시", "type": "checkbox", "default": False},
         {"key": "SHOW_ROOKIE", "label": "신인 랭킹 표시", "type": "checkbox", "default": False},
         {"key": "SHOW_ORIGINAL", "label": "오리지널 랭킹 표시", "type": "checkbox", "default": False},
         {"key": "SHOW_AI", "label": "AI 생성 랭킹 표시 (종합에서만 유효)", "type": "checkbox", "default": False},
@@ -198,8 +199,8 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
     def _enabled_modes(self, cfg):
         flags = [
             ("daily", "SHOW_DAILY", True),
-            ("weekly", "SHOW_WEEKLY", True),
-            ("monthly", "SHOW_MONTHLY", True),
+            ("weekly", "SHOW_WEEKLY", False),
+            ("monthly", "SHOW_MONTHLY", False),
             ("rookie", "SHOW_ROOKIE", False),
             ("original", "SHOW_ORIGINAL", False),
             ("daily_ai", "SHOW_AI", False),
@@ -251,9 +252,10 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
 
         cookies = {"PHPSESSID": phpsessid}
 
-        items = []
+        # 1단계: 랭킹 페이지에서 (content, mode, illust_id) 목록만 빠르게 수집 (이미지 다운로드 없음)
+        pending = []  # [(content_label, mode_label, illust_id), ...]
         for content, mode in combos:
-            if len(items) >= self._MAX_TOTAL_ITEMS:
+            if len(pending) >= self._MAX_TOTAL_ITEMS:
                 break
             content_label = _CONTENT_LABELS.get(content, content)
             mode_label = _MODE_LABELS.get(mode, mode)
@@ -262,19 +264,40 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             logger.info(
                 "[pixiv_ranking] [%s/%s] 작품 ID %d개 추출", content_label, mode_label, len(illust_ids)
             )
-
             for illust_id in illust_ids:
-                if len(items) >= self._MAX_TOTAL_ITEMS:
+                if len(pending) >= self._MAX_TOTAL_ITEMS:
                     break
-                detail = self._get_illust_detail(illust_id, cookies)
-                if not detail:
-                    logger.warning(
-                        "[pixiv_ranking] [%s/%s] illust_id=%s 상세 조회 실패, 건너뜀",
-                        content_label, mode_label, illust_id,
-                    )
-                    continue
-                item = self._build_item(detail, illust_id, image_size, cookies, content_label, mode_label)
-                items.append(item)
+                pending.append((content_label, mode_label, illust_id))
+
+        logger.info("[pixiv_ranking] 상세/이미지 조회 대상 %d건, 병렬 처리 시작", len(pending))
+
+        # 2단계: 상세정보 + 이미지 다운로드(base64)를 스레드풀로 병렬 처리 (여기가 제일 느린 부분)
+        items_by_index = {}
+
+        def _worker(idx, content_label, mode_label, illust_id):
+            detail = self._get_illust_detail(illust_id, cookies)
+            if not detail:
+                logger.warning(
+                    "[pixiv_ranking] [%s/%s] illust_id=%s 상세 조회 실패, 건너뜀",
+                    content_label, mode_label, illust_id,
+                )
+                return idx, None
+            item = self._build_item(detail, illust_id, image_size, cookies, content_label, mode_label)
+            return idx, item
+
+        max_workers = min(8, max(1, len(pending)))
+        if pending:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [
+                    pool.submit(_worker, idx, c, m, iid)
+                    for idx, (c, m, iid) in enumerate(pending)
+                ]
+                for fut in concurrent.futures.as_completed(futures):
+                    idx, item = fut.result()
+                    if item:
+                        items_by_index[idx] = item
+
+        items = [items_by_index[i] for i in range(len(pending)) if i in items_by_index]
 
         logger.info("[pixiv_ranking] 최종 아이템 %d개 구성 완료 (조합 %d개)", len(items), len(combos))
 
