@@ -9,7 +9,7 @@ async function fetchRanking() {
     
     try {
         // 서버의 실제 API 엔드포인트 경로를 확인하여 수정하세요
-        const response = await fetch(`/api/metadata/plugin/pixiv_ranking/fetch_ranking?mode=${mode}&content=${content}`);
+        const response = await fetch(`/plugin/metadata/pixiv_ranking/pixiv_get?mode=${mode}&content=${content}`);
         
         if (!response.ok) throw new Error('서버 응답 오류: ' + response.status);
         
