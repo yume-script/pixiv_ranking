@@ -19,12 +19,16 @@ Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
 
 import base64
 import json
+import logging
 import re
+import time
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from plugins.metadata.base import BaseMetadataProvider
+
+logger = logging.getLogger(__name__)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -50,17 +54,7 @@ def _thumb_to_original(thumb_url):
     original = original.replace("_master1200", "")
     return original
 
-class MyCategoryPlugin(BaseMetadataProvider):
-    id = "pixiv_ranking"
-    name = "Pixiv 랭킹"
-    is_searchable = False
 
-    category_tab = {
-        "title": "Pixiv 랭킹",
-        "icon": "fa-solid fa-chart-line",
-        "order": 80
-    }
-  
 class PixivRankingMetadataProvider(BaseMetadataProvider):
     id = "pixiv_ranking"
     name = "Pixiv 랭킹"
@@ -116,8 +110,17 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "provider": "Pixiv",
         "icon": "fa-solid fa-image",
         "limit": 10,
-        "all_desk_tab": True,  # (선택) True 시 공통 데스크 카드가 아닌 단독 전체화면 탭으로 동적 렌더링됨 (기본값: False)
         "supported_types": ["general"],
+    }
+
+    # 코어 좌측/상단 "카테고리" 내비게이션에 별도 메뉴로 노출되는 풀페이지 탭 계약.
+    # (guide_plugins.md에는 없지만 random_gallery 실제 소스로 확인된 계약:
+    #  title/icon/order 만 선언하면 되고, 카드 데이터는 get_dashboard_data()를
+    #  그대로 재사용함 — 별도 index.html/script.js 불필요)
+    category_tab = {
+        "title": "Pixiv 랭킹",
+        "icon": "fa-solid fa-image",
+        "order": 92,
     }
 
     # ---- 필수 계약 (대시보드 전용이라 실질 동작 없음) ----
@@ -144,29 +147,63 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             f"https://www.pixiv.net/ranking.php"
             f"?mode={mode}&content={content}&format=json"
         )
+        logger.warning(
+            "[pixiv_ranking] 1/3 랭킹 조회 시작: mode=%s, content=%s, limit=%s, url=%s",
+            mode, content, limit, url,
+        )
+        t0 = time.time()
         req = urllib.request.Request(url, headers=self._get_headers(session_id))
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            status = resp.getcode()
+            raw = resp.read().decode("utf-8")
+        elapsed = time.time() - t0
+        logger.warning(
+            "[pixiv_ranking] 1/3 랭킹 응답 수신: status=%s, %.2fs 소요, body(앞 300자)=%s",
+            status, elapsed, raw[:300],
+        )
+        data = json.loads(raw)
         contents = data.get("contents", [])
+        logger.warning(
+            "[pixiv_ranking] 1/3 랭킹 파싱 완료: 전체 %d개 중 %d개 사용 예정",
+            len(contents), min(limit, len(contents)),
+        )
         return contents[:limit]
 
     def _fetch_thumb_data_uri(self, thumb_url, session_id):
         """썸네일을 다운로드해 base64 data URI로 변환 (로컬 저장 없음)."""
         if not thumb_url:
+            logger.warning("[pixiv_ranking] 2/3 썸네일 URL 없음, 건너뜀")
             return None
+        t0 = time.time()
         try:
             req = urllib.request.Request(
                 thumb_url, headers=self._get_headers(session_id)
             )
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                status = resp.getcode()
                 raw = resp.read()
                 content_type = resp.headers.get("Content-Type", "image/jpeg")
             b64 = base64.b64encode(raw).decode("ascii")
+            elapsed = time.time() - t0
+            logger.warning(
+                "[pixiv_ranking] 2/3 썸네일 수신 성공: status=%s, %.2fs, %d bytes, %s | %s",
+                status, elapsed, len(raw), content_type, thumb_url,
+            )
             return f"data:{content_type};base64,{b64}"
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+            elapsed = time.time() - t0
+            logger.warning(
+                "[pixiv_ranking] 2/3 썸네일 수신 실패(%.2fs): %s | %s",
+                elapsed, e, thumb_url,
+            )
             return None
 
     def _build_items(self, contents, session_id):
+        logger.warning(
+            "[pixiv_ranking] 2/3 썸네일 %d개 병렬 수집 시작 (동시 %d개)",
+            len(contents), MAX_CONCURRENT_THUMBS,
+        )
+        t0 = time.time()
         items = [None] * len(contents)
 
         def _work(idx, entry):
@@ -203,16 +240,31 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
                 idx, item = fut.result()
                 items[idx] = item
 
+        elapsed = time.time() - t0
+        success_count = sum(1 for it in items if it.get("cover"))
+        logger.warning(
+            "[pixiv_ranking] 2/3 썸네일 수집 완료: %.2fs, 성공 %d/%d개",
+            elapsed, success_count, len(items),
+        )
         return items
 
     # ---- 대시보드 계약 ----
     def get_dashboard_data(self, db_type, limit=10):
+        logger.warning(
+            "[pixiv_ranking] 0/3 get_dashboard_data 호출: db_type=%s, limit=%s",
+            db_type, limit,
+        )
         cfg = self.get_plugin_config(db_type, default={})
         session_id = cfg.get("PHPSESSID")
         mode = cfg.get("MODE", "daily")
         content = cfg.get("CONTENT", "all")
+        logger.warning(
+            "[pixiv_ranking] 0/3 설정 로드 완료: mode=%s, content=%s, session=%s",
+            mode, content, "설정됨" if session_id else "없음",
+        )
 
         if not session_id:
+            logger.warning("[pixiv_ranking] 중단: PHPSESSID 미설정")
             return {
                 "success": False,
                 "error": "Pixiv 로그인 세션(PHPSESSID)이 설정되지 않았습니다.",
@@ -221,10 +273,15 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         try:
             contents = self._fetch_ranking(session_id, mode, content, limit)
         except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
+            logger.warning("[pixiv_ranking] 중단: 랭킹 조회 실패: %s", e)
             return {"success": False, "error": f"랭킹 조회 실패: {e}"}
 
         if not contents:
+            logger.warning("[pixiv_ranking] 랭킹 결과 0건, 빈 목록 반환")
             return {"success": True, "items": []}
 
         items = self._build_items(contents, session_id)
+        logger.warning(
+            "[pixiv_ranking] 3/3 완료: 최종 %d개 항목 반환", len(items),
+        )
         return {"success": True, "items": items}
