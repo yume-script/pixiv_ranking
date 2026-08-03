@@ -59,6 +59,38 @@
   border-color: rgba(56, 189, 248, 0.6);
 }
 
+.pxr-refresh-btn {
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #38bdf8;
+  color: #0f172a;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.pxr-refresh-btn:hover {
+  background: #7dd3fc;
+}
+
+.pxr-refresh-btn:active {
+  transform: scale(0.97);
+}
+
+.pxr-refresh-btn i {
+  transition: transform 0.4s ease;
+}
+
+.pxr-refresh-btn.pxr-spinning i {
+  transform: rotate(360deg);
+}
+
 .pxr-status {
   background: rgba(239, 68, 68, 0.08);
   border: 1px solid rgba(239, 68, 68, 0.25);

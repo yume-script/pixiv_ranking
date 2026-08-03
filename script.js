@@ -20,11 +20,14 @@
     root: document.getElementById("pixiv-ranking-root"),
     contentSelect: document.getElementById("pxr-content-select"),
     modeSelect: document.getElementById("pxr-mode-select"),
+    refreshBtn: document.getElementById("pxr-refresh-btn"),
     grid: document.getElementById("pxr-grid"),
     status: document.getElementById("pxr-status"),
   };
 
   const ALL_LABEL = "전체";
+  const DEFAULT_CONTENT = "종합";
+  const DEFAULT_MODE = "일간";
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -257,22 +260,28 @@
       return [ALL_LABEL, ...Array.from(contentToModes.get(c) || [])];
     }
 
-    function refreshModeSelect() {
-      const prevSelected = els.modeSelect.value || ALL_LABEL;
+    function refreshModeSelect(preferredMode) {
+      const prevSelected = preferredMode || els.modeSelect.value || ALL_LABEL;
       const options = currentModeOptions();
       const nextSelected = options.includes(prevSelected) ? prevSelected : ALL_LABEL;
       fillSelect(els.modeSelect, options, nextSelected);
     }
 
-    fillSelect(els.contentSelect, [ALL_LABEL, ...contentLabels], ALL_LABEL);
-    refreshModeSelect();
+    const initialContent = contentLabels.includes(DEFAULT_CONTENT) ? DEFAULT_CONTENT : ALL_LABEL;
+    fillSelect(els.contentSelect, [ALL_LABEL, ...contentLabels], initialContent);
+    refreshModeSelect(DEFAULT_MODE);
 
+    // 드롭다운을 바꿔도 그리드는 즉시 갱신되지 않습니다.
+    // '콘텐츠'를 바꾸면 '기간' 옵션 목록만 그에 맞게 다시 채워주고,
+    // 실제 화면 갱신은 '새로고침' 버튼을 눌러야 반영됩니다.
     els.contentSelect.addEventListener("change", () => {
       refreshModeSelect();
-      renderGrid();
     });
-    els.modeSelect.addEventListener("change", () => {
+
+    els.refreshBtn.addEventListener("click", () => {
+      els.refreshBtn.classList.add("pxr-spinning");
       renderGrid();
+      setTimeout(() => els.refreshBtn.classList.remove("pxr-spinning"), 400);
     });
 
     function renderGrid() {
