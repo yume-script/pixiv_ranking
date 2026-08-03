@@ -9,8 +9,19 @@
 <div id="pixiv-ranking-root" class="pxr-root">
   <div class="pxr-header">
     <h2 class="pxr-title"><i class="fa-solid fa-image"></i> Pixiv 랭킹</h2>
-    <div class="pxr-tabs" id="pxr-tabs">
-      <!-- 탭 버튼은 실제 데이터의 category 값들을 기반으로 script.js가 동적으로 채웁니다 -->
+    <div class="pxr-filters">
+      <label class="pxr-filter-label">
+        콘텐츠
+        <select id="pxr-content-select" class="pxr-select">
+          <!-- 실제 데이터의 content_label 값들을 기반으로 script.js가 동적으로 채웁니다 -->
+        </select>
+      </label>
+      <label class="pxr-filter-label">
+        기간
+        <select id="pxr-mode-select" class="pxr-select">
+          <!-- 실제 데이터의 mode_label 값들을 기반으로 script.js가 동적으로 채웁니다 -->
+        </select>
+      </label>
     </div>
   </div>
 

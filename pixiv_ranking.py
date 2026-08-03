@@ -2,11 +2,11 @@
 """
 Pixiv 랭킹 이미지 위젯 플러그인 (BookOasis metadata plugin)
 
-- [플러그인] 카테고리의 독립된 단독 탭(all_desk_tab)으로 렌더링됩니다.
-- 설정에서 체크한 여러 랭킹 종류(일간/주간/월간 등)를 한 번에 가져와
-  제목 앞에 [일간]/[주간] 라벨을 붙여 하나의 목록으로 함께 보여줍니다.
-  (코어가 위젯 내부의 실시간 탭 전환 UI를 지원하지 않아, index.html/script.js는
-   설정 화면에만 적용되고 실제 위젯 화면에는 반영되지 않습니다 - 가이드 4절 참고)
+- [플러그인] 카테고리의 독립된 단독 풀페이지(index.html)로 렌더링됩니다.
+- content(종합/일러스트/우고이라/만화) x mode(일간/주간/월간/신인/오리지널/AI생성/남녀인기)
+  조합 중 설정에서 체크한 것들을 전부 가져와 각 아이템에 content/mode 라벨을 붙입니다.
+  실제 조합 필터링(드롭다운 2개)은 index.html/script.js가 이미 받아온 데이터를
+  클라이언트에서 필터링하는 방식으로 처리합니다 (백엔드 재호출 없음).
 - PHPSESSID(pixiv 로그인 세션 쿠키)를 플러그인 설정에서 입력해야 동작합니다.
 - 외부 패키지(requests) 의존성 없이 파이썬 표준 라이브러리(urllib)만 사용합니다.
 - 이미지 서버(i.pximg.net)의 Referer 핫링크 차단을 우회하기 위해
@@ -14,6 +14,8 @@ Pixiv 랭킹 이미지 위젯 플러그인 (BookOasis metadata plugin)
 
 주의:
 - pixiv 이용약관상 대량 크롤링/재배포는 금지되어 있으니 개인 열람용으로만 사용하십시오.
+- content x mode 조합이 많을수록(특히 이미지 다운로드) 로딩이 느려집니다.
+  기본값은 '종합'의 일간/주간/월간만 켜져 있습니다. 필요한 것만 선택해서 켜세요.
 """
 
 import base64
@@ -28,15 +30,30 @@ from plugins.metadata.base import BaseMetadataProvider
 
 logger = logging.getLogger("plugin.pixiv_ranking")
 
-# 표시 라벨 매핑
 _MODE_LABELS = {
     "daily": "일간",
     "weekly": "주간",
     "monthly": "월간",
     "rookie": "신인",
     "original": "오리지널",
+    "daily_ai": "AI 생성",
     "male": "남자인기",
     "female": "여자인기",
+}
+
+_CONTENT_LABELS = {
+    "all": "종합",
+    "illust": "일러스트",
+    "ugoira": "우고이라",
+    "manga": "만화",
+}
+
+# 실제 pixiv에서 유효한 content x mode 조합만 명시 (무효 조합은 애초에 요청하지 않음)
+_VALID_COMBOS = {
+    "all": ["daily", "weekly", "monthly", "rookie", "original", "daily_ai", "male", "female"],
+    "illust": ["daily", "weekly", "monthly", "rookie"],
+    "ugoira": ["daily", "weekly"],
+    "manga": ["daily", "weekly", "monthly", "rookie"],
 }
 
 
@@ -52,13 +69,20 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             "type": "password",
             "required": True,
         },
+        # 콘텐츠 종류
+        {"key": "SHOW_CONTENT_ALL", "label": "종합 포함", "type": "checkbox", "default": True},
+        {"key": "SHOW_CONTENT_ILLUST", "label": "일러스트 포함", "type": "checkbox", "default": False},
+        {"key": "SHOW_CONTENT_UGOIRA", "label": "우고이라 포함", "type": "checkbox", "default": False},
+        {"key": "SHOW_CONTENT_MANGA", "label": "만화 포함", "type": "checkbox", "default": False},
+        # 랭킹 기간/종류
         {"key": "SHOW_DAILY", "label": "일간 랭킹 표시", "type": "checkbox", "default": True},
         {"key": "SHOW_WEEKLY", "label": "주간 랭킹 표시", "type": "checkbox", "default": True},
         {"key": "SHOW_MONTHLY", "label": "월간 랭킹 표시", "type": "checkbox", "default": True},
         {"key": "SHOW_ROOKIE", "label": "신인 랭킹 표시", "type": "checkbox", "default": False},
         {"key": "SHOW_ORIGINAL", "label": "오리지널 랭킹 표시", "type": "checkbox", "default": False},
-        {"key": "SHOW_MALE", "label": "남자에게 인기 표시", "type": "checkbox", "default": False},
-        {"key": "SHOW_FEMALE", "label": "여자에게 인기 표시", "type": "checkbox", "default": False},
+        {"key": "SHOW_AI", "label": "AI 생성 랭킹 표시 (종합에서만 유효)", "type": "checkbox", "default": False},
+        {"key": "SHOW_MALE", "label": "남자에게 인기 표시 (종합에서만 유효)", "type": "checkbox", "default": False},
+        {"key": "SHOW_FEMALE", "label": "여자에게 인기 표시 (종합에서만 유효)", "type": "checkbox", "default": False},
         {
             "key": "IMAGE_SIZE",
             "label": "이미지 크기",
@@ -71,10 +95,10 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             ],
         },
         {
-            "key": "PER_MODE_LIMIT",
-            "label": "랭킹 종류별 가져올 이미지 개수",
+            "key": "PER_COMBO_LIMIT",
+            "label": "조합(콘텐츠×기간)별 가져올 이미지 개수",
             "type": "number",
-            "default": 8,
+            "default": 5,
         },
     ]
 
@@ -83,8 +107,8 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "subtitle": "pixiv 랭킹 이미지",
         "provider": "pixiv",
         "icon": "fa-solid fa-image",
-        "limit": 60,
-        "all_desk_tab": True,  # 공통 데스크 카드가 아닌 [플러그인] 카테고리 단독 전체화면 탭으로 렌더링
+        "limit": 80,
+        "all_desk_tab": True,  # [플러그인] 카테고리 단독 풀페이지 (index.html 로 렌더링)
         "supported_types": ["general"],
     }
 
@@ -92,7 +116,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "enabled": True,
         "provider": "github-raw",
         "raw_base_url": "https://raw.githubusercontent.com/<org>/<repo>/main/plugins/metadata/pixiv_ranking",
-        "files": ["pixiv_ranking.py", "__init__.py", "VERSION"],
+        "files": ["pixiv_ranking.py", "__init__.py", "VERSION", "index.html", "style.css", "script.js"],
         "version_file": "VERSION",
         "version_key": "plugin version",
         "show_sample_update_button": True,
@@ -105,7 +129,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
     _REFERER = "https://www.pixiv.net/"
     _TIMEOUT = 10
     _MAX_IMAGE_BYTES = 3 * 1024 * 1024
-    _MAX_TOTAL_ITEMS = 60
+    _MAX_TOTAL_ITEMS = 80
 
     # ---------------------------------------------------------------
     # 코어 필수 계약
@@ -162,6 +186,28 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             raw = res.read()
             return res.status, content_type, raw
 
+    def _enabled_content_types(self, cfg):
+        flags = [
+            ("all", "SHOW_CONTENT_ALL", True),
+            ("illust", "SHOW_CONTENT_ILLUST", False),
+            ("ugoira", "SHOW_CONTENT_UGOIRA", False),
+            ("manga", "SHOW_CONTENT_MANGA", False),
+        ]
+        return [c for c, key, default in flags if cfg.get(key, default)]
+
+    def _enabled_modes(self, cfg):
+        flags = [
+            ("daily", "SHOW_DAILY", True),
+            ("weekly", "SHOW_WEEKLY", True),
+            ("monthly", "SHOW_MONTHLY", True),
+            ("rookie", "SHOW_ROOKIE", False),
+            ("original", "SHOW_ORIGINAL", False),
+            ("daily_ai", "SHOW_AI", False),
+            ("male", "SHOW_MALE", False),
+            ("female", "SHOW_FEMALE", False),
+        ]
+        return [m for m, key, default in flags if cfg.get(key, default)]
+
     def _fetch_items(self, db_type, limit=10):
         cfg = self.get_plugin_config(db_type, default={})
         phpsessid = cfg.get("PHPSESSID")
@@ -175,72 +221,82 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             }
 
         try:
-            per_mode_limit = int(cfg.get("PER_MODE_LIMIT", 8) or 8)
+            per_combo_limit = int(cfg.get("PER_COMBO_LIMIT", 5) or 5)
         except (TypeError, ValueError):
-            per_mode_limit = 8
-        per_mode_limit = max(1, min(per_mode_limit, 30))
+            per_combo_limit = 5
+        per_combo_limit = max(1, min(per_combo_limit, 20))
 
-        enabled_modes = []
-        mode_flags = [
-            ("daily", "SHOW_DAILY", True),
-            ("weekly", "SHOW_WEEKLY", True),
-            ("monthly", "SHOW_MONTHLY", True),
-            ("rookie", "SHOW_ROOKIE", False),
-            ("original", "SHOW_ORIGINAL", False),
-            ("male", "SHOW_MALE", False),
-            ("female", "SHOW_FEMALE", False),
-        ]
-        for mode, key, default in mode_flags:
-            if cfg.get(key, default):
-                enabled_modes.append(mode)
+        content_types = self._enabled_content_types(cfg)
+        modes = self._enabled_modes(cfg)
 
-        if not enabled_modes:
+        if not content_types or not modes:
             return {
                 "success": False,
-                "error": "표시할 랭킹 종류가 하나도 선택되지 않았습니다. 플러그인 설정에서 최소 1개 이상 체크해 주세요.",
+                "error": "표시할 콘텐츠 종류 또는 랭킹 기간이 하나도 선택되지 않았습니다. 플러그인 설정에서 최소 1개 이상씩 체크해 주세요.",
+            }
+
+        # 실제로 유효한 (content, mode) 조합만 추림
+        combos = []
+        for content in content_types:
+            valid_modes_for_content = _VALID_COMBOS.get(content, [])
+            for mode in modes:
+                if mode in valid_modes_for_content:
+                    combos.append((content, mode))
+
+        if not combos:
+            return {
+                "success": False,
+                "error": "선택한 콘텐츠 종류와 랭킹 기간의 조합이 pixiv에서 유효하지 않습니다 (예: 우고이라+월간은 존재하지 않음).",
             }
 
         cookies = {"PHPSESSID": phpsessid}
 
         items = []
-        for mode in enabled_modes:
+        for content, mode in combos:
             if len(items) >= self._MAX_TOTAL_ITEMS:
                 break
+            content_label = _CONTENT_LABELS.get(content, content)
             mode_label = _MODE_LABELS.get(mode, mode)
-            illust_ids = self._get_ranking_illust_ids(mode, cookies, per_mode_limit)
-            logger.info("[pixiv_ranking] [%s] 작품 ID %d개 추출", mode_label, len(illust_ids))
+
+            illust_ids = self._get_ranking_illust_ids(mode, content, cookies, per_combo_limit)
+            logger.info(
+                "[pixiv_ranking] [%s/%s] 작품 ID %d개 추출", content_label, mode_label, len(illust_ids)
+            )
 
             for illust_id in illust_ids:
                 if len(items) >= self._MAX_TOTAL_ITEMS:
                     break
                 detail = self._get_illust_detail(illust_id, cookies)
                 if not detail:
-                    logger.warning("[pixiv_ranking] [%s] illust_id=%s 상세 조회 실패, 건너뜀", mode_label, illust_id)
+                    logger.warning(
+                        "[pixiv_ranking] [%s/%s] illust_id=%s 상세 조회 실패, 건너뜀",
+                        content_label, mode_label, illust_id,
+                    )
                     continue
-                item = self._build_item(detail, illust_id, image_size, cookies, mode_label)
+                item = self._build_item(detail, illust_id, image_size, cookies, content_label, mode_label)
                 items.append(item)
 
-        logger.info("[pixiv_ranking] 최종 아이템 %d개 구성 완료 (모드: %s)", len(items), ", ".join(enabled_modes))
+        logger.info("[pixiv_ranking] 최종 아이템 %d개 구성 완료 (조합 %d개)", len(items), len(combos))
 
         if not items:
             return {
                 "success": False,
-                "error": "선택한 랭킹에서 이미지를 하나도 가져오지 못했습니다. PHPSESSID 유효성을 확인해 주세요.",
+                "error": "선택한 조합에서 이미지를 하나도 가져오지 못했습니다. PHPSESSID 유효성을 확인해 주세요.",
             }
 
         return {"success": True, "items": items}
 
-    def _get_ranking_illust_ids(self, mode, cookies, limit):
-        params = urllib.parse.urlencode({"mode": mode})
+    def _get_ranking_illust_ids(self, mode, content, cookies, limit):
+        params = urllib.parse.urlencode({"mode": mode, "content": content})
         url = f"https://www.pixiv.net/ranking.php?{params}"
 
         try:
             status, body = self._http_get_text(url, cookies=cookies)
         except urllib.error.HTTPError as e:
-            logger.error("[pixiv_ranking] [%s] 랭킹 페이지 HTTP 에러: %s %s", mode, e.code, e.reason)
+            logger.error("[pixiv_ranking] [%s/%s] 랭킹 페이지 HTTP 에러: %s %s", content, mode, e.code, e.reason)
             return []
         except urllib.error.URLError as e:
-            logger.error("[pixiv_ranking] [%s] 랭킹 페이지 접속 실패: %s", mode, e.reason)
+            logger.error("[pixiv_ranking] [%s/%s] 랭킹 페이지 접속 실패: %s", content, mode, e.reason)
             return []
 
         ids = re.findall(r"/artworks/(\d+)", body)
@@ -274,7 +330,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
 
         return data.get("body")
 
-    def _build_item(self, body, illust_id, image_size, cookies, mode_label):
+    def _build_item(self, body, illust_id, image_size, cookies, content_label, mode_label):
         urls = body.get("urls") or {}
 
         remote_url = None
@@ -297,7 +353,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
                 logger.warning("[pixiv_ranking] illust_id=%s 이미지 다운로드 실패: %s", illust_id, e)
 
         raw_title = body.get("illustTitle") or f"작품 {illust_id}"
-        title = f"[{mode_label}] {raw_title}"
+        title = f"[{content_label}·{mode_label}] {raw_title}"
         author = body.get("userName")
         artwork_url = f"https://www.pixiv.net/artworks/{illust_id}"
 
@@ -307,7 +363,9 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             "url": artwork_url,
             "link": artwork_url,
             "illust_id": illust_id,
-            "category": mode_label,
+            "category": content_label,  # 하위호환용
+            "content_label": content_label,
+            "mode_label": mode_label,
             "cover": image_value,
             "cover_url": image_value,
             "image_url": image_value,

@@ -14,10 +14,13 @@
 
   const els = {
     root: document.getElementById("pixiv-ranking-root"),
-    tabs: document.getElementById("pxr-tabs"),
+    contentSelect: document.getElementById("pxr-content-select"),
+    modeSelect: document.getElementById("pxr-mode-select"),
     grid: document.getElementById("pxr-grid"),
     status: document.getElementById("pxr-status"),
   };
+
+  const ALL_LABEL = "전체";
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -167,8 +170,12 @@
     );
   }
 
-  function pickCategory(item) {
-    return item.category || "전체";
+  function pickContentLabel(item) {
+    return item.content_label || item.category || ALL_LABEL;
+  }
+
+  function pickModeLabel(item) {
+    return item.mode_label || ALL_LABEL;
   }
 
   function pickUrl(item) {
@@ -176,34 +183,67 @@
   }
 
   function renderItems(items) {
-    const categories = ["전체"];
+    // content_label -> Set(mode_label) : 실제 로드된 데이터 기준으로 유효한 조합만 구성
+    const contentToModes = new Map();
     for (const item of items) {
-      const c = pickCategory(item);
-      if (!categories.includes(c)) categories.push(c);
+      const c = pickContentLabel(item);
+      const m = pickModeLabel(item);
+      if (!contentToModes.has(c)) contentToModes.set(c, new Set());
+      contentToModes.get(c).add(m);
     }
+    const contentLabels = Array.from(contentToModes.keys());
 
-    let activeCategory = "전체";
-
-    function renderTabs() {
-      els.tabs.innerHTML = "";
-      for (const c of categories) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "pxr-tab-btn" + (c === activeCategory ? " active" : "");
-        btn.textContent = c;
-        btn.addEventListener("click", () => {
-          activeCategory = c;
-          renderTabs();
-          renderGrid();
-        });
-        els.tabs.appendChild(btn);
+    function fillSelect(selectEl, options, selected) {
+      selectEl.innerHTML = "";
+      for (const opt of options) {
+        const el = document.createElement("option");
+        el.value = opt;
+        el.textContent = opt;
+        if (opt === selected) el.selected = true;
+        selectEl.appendChild(el);
       }
     }
 
+    function currentModeOptions() {
+      const c = els.contentSelect.value;
+      if (c === ALL_LABEL) {
+        const all = new Set([ALL_LABEL]);
+        for (const modes of contentToModes.values()) {
+          for (const m of modes) all.add(m);
+        }
+        return Array.from(all);
+      }
+      return [ALL_LABEL, ...Array.from(contentToModes.get(c) || [])];
+    }
+
+    function refreshModeSelect() {
+      const prevSelected = els.modeSelect.value || ALL_LABEL;
+      const options = currentModeOptions();
+      const nextSelected = options.includes(prevSelected) ? prevSelected : ALL_LABEL;
+      fillSelect(els.modeSelect, options, nextSelected);
+    }
+
+    fillSelect(els.contentSelect, [ALL_LABEL, ...contentLabels], ALL_LABEL);
+    refreshModeSelect();
+
+    els.contentSelect.addEventListener("change", () => {
+      refreshModeSelect();
+      renderGrid();
+    });
+    els.modeSelect.addEventListener("change", () => {
+      renderGrid();
+    });
+
     function renderGrid() {
       els.grid.innerHTML = "";
-      const filtered =
-        activeCategory === "전체" ? items : items.filter((it) => pickCategory(it) === activeCategory);
+      const contentVal = els.contentSelect.value;
+      const modeVal = els.modeSelect.value;
+
+      const filtered = items.filter((it) => {
+        const contentOk = contentVal === ALL_LABEL || pickContentLabel(it) === contentVal;
+        const modeOk = modeVal === ALL_LABEL || pickModeLabel(it) === modeVal;
+        return contentOk && modeOk;
+      });
 
       if (filtered.length === 0) {
         const empty = document.createElement("div");
@@ -242,7 +282,7 @@
 
         const badge = document.createElement("div");
         badge.className = "pxr-card-badge";
-        badge.textContent = pickCategory(item);
+        badge.textContent = pickContentLabel(item) + " · " + pickModeLabel(item);
 
         body.appendChild(title);
         body.appendChild(author);
@@ -254,7 +294,6 @@
       }
     }
 
-    renderTabs();
     renderGrid();
   }
 
