@@ -106,6 +106,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "provider": "Pixiv",
         "icon": "fa-solid fa-image",
         "limit": 10,
+        "all_desk_tab": True,  # (선택) True 시 공통 데스크 카드가 아닌 단독 전체화면 탭으로 동적 렌더링됨 (기본값: False)
         "supported_types": ["general"],
     }
 
