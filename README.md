@@ -1,2 +1,2 @@
 # pixiv_ranking
-ㅊㅊㅊ
+git clone https://github.com/yume-script/pixiv_ranking
