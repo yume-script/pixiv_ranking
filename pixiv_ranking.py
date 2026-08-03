@@ -58,18 +58,20 @@ class PixivRankingPlugin(BaseMetadataProvider):
     """
     Pixiv 랭킹을 카테고리 레벨 풀페이지로 보여주는 플러그인.
 
-    ⚠️ 확인 필요:
-    - `category_tab` 필드는 guide_plugins.md에 문서화된 공식 계약이 아닙니다.
-      (문서 5장 기준 풀페이지 탭의 공식 계약은
-       dashboard_widget = {..., 'all_desk_tab': True} + get_dashboard_data() 입니다.)
-      코어가 실제로 category_tab을 인식하지 못한다면 탭이 노출되지 않을 수 있으니,
-      실제 BookOasis 코어 버전에서 지원 여부를 확인하세요.
-    - pixiv_get / proxy_image 를 실제로 어떤 URL로 호출할 수 있는지도
-      코어의 라우팅 규칙에 맞춰 확인이 필요합니다. (guide 1장: "코어는 플러그인
-      고유 라우트/내부 함수명을 알지 않는다"는 원칙과 상충될 수 있습니다.)
-      아래 코드와 script.js는 상대경로(같은 플러그인 네임스페이스 하위)를
-      호출한다고 가정한 것이므로, 실제 라우트가 다르면 script.js의
-      API_BASE / PROXY_BASE 값만 바꿔주면 됩니다.
+    확인 완료 (서버 소스 대조 결과):
+    - `category_tab`은 실제 코어 계약입니다. services/metadata_factory.py가
+      getattr(target_class, 'category_tab', None)로 읽고, api/library.py의
+      /api/media/category-plugins가 사이드바 메뉴를 만들 때 사용합니다.
+      풀페이지 UI(index.html/style.css/script.js)는 /api/media/plugins/<id>/ui
+      가 JSON 번들로 내려줍니다. → 이 부분은 그대로 두면 정상 동작합니다.
+    - /api/media/dashboard/widgets/<id>/data 는 오직 get_dashboard_data(db_type, limit)
+      만 호출하며 type/limit 외 파라미터는 넘겨주지 않습니다. mode/content 같은
+      커스텀 파라미터가 필요하면 이 공용 엔드포인트로는 처리할 수 없습니다.
+    - 그래서 mode/content를 받는 실시간 조회, 이미지 프록시는
+      plugins/metadata/aladin_bestseller/aladin_bestseller.py 가 쓰는 것과
+      동일한 방식으로, 클래스 메서드가 아니라 **모듈 최상단에서 @app.route(...)**
+      로 직접 등록합니다 (아래 참고). `app`은 플러그인 로더가 모듈 네임스페이스에
+      미리 주입해두므로 import 없이 그대로 사용합니다.
     """
 
     id = "pixiv_ranking"
@@ -100,9 +102,43 @@ class PixivRankingPlugin(BaseMetadataProvider):
         return False, "이 플러그인은 카테고리 전용이며 메타데이터 적용 대상이 아닙니다."
 
     # ---------------------------------------------------------------
-    # 커스텀 백엔드 엔드포인트
+    # (선택) 공통 데스크 위젯 계약 — /api/media/dashboard/widgets/<id>/data 가
+    # 호출합니다. category_tab 풀페이지는 아래의 커스텀 @app.route를 쓰므로
+    # 이 메서드는 "일반 대시보드 카드"로도 노출하고 싶을 때만 필요합니다.
+    # (원치 않으면 dashboard_widget 속성 자체를 지우면 됩니다.)
     # ---------------------------------------------------------------
-    def pixiv_get(self):
+    def get_dashboard_data(self, db_type, limit=10):
+        try:
+            contents = fetch_pixiv_ranking('daily', 'all')[:limit]
+            items = [
+                {
+                    'title': c.get('title'),
+                    'author': c.get('user_name', ''),
+                    'publisher': '',
+                    'cover': c.get('url'),
+                    'link': c.get('url'),
+                }
+                for c in contents
+            ]
+            return {'success': True, 'items': items}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+
+# ---------------------------------------------------------------------
+# 커스텀 백엔드 엔드포인트 (plugins/metadata/aladin_bestseller/aladin_bestseller.py
+# 와 동일한 방식: 클래스 메서드가 아니라 모듈 최상단에서 @app.route(...)로 직접
+# 등록합니다. `app`은 플러그인 로더가 이 모듈을 로드할 때 네임스페이스에 미리
+# 주입해두므로 import 없이 그대로 사용합니다.
+#
+# script.js는 이 절대경로들을 그대로 fetch() 합니다:
+#   GET /api/dashboard/pixiv-ranking?mode=daily&content=all
+#   GET /api/dashboard/pixiv-ranking/image-proxy?url=<encoded>
+# ---------------------------------------------------------------------
+if _FLASK_AVAILABLE:
+
+    @app.route('/api/dashboard/pixiv-ranking', methods=['GET'])
+    def get_pixiv_ranking_api():
         mode = request.args.get('mode', 'daily')
         content = request.args.get('content', 'all')
         logger.info(f"[Pixiv] 요청 수신: mode={mode}, content={content}")
@@ -115,7 +151,8 @@ class PixivRankingPlugin(BaseMetadataProvider):
             logger.error(f"[Pixiv] 데이터 수신 중 오류 발생: {str(e)}")
             return jsonify({'success': False, 'error': str(e)}), 500
 
-    def proxy_image(self):
+    @app.route('/api/dashboard/pixiv-ranking/image-proxy', methods=['GET'])
+    def proxy_pixiv_image_api():
         image_url = request.args.get('url')
         if not image_url:
             logger.warning("[Proxy] 이미지 URL이 비어있음")
@@ -131,7 +168,7 @@ class PixivRankingPlugin(BaseMetadataProvider):
             return Response("Forbidden host", status=403)
 
         logger.info(f"[Proxy] 이미지 요청: {image_url}")
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.pixiv.net/"}
+        headers = {"User-Agent": PIXIV_USER_AGENT, "Referer": "https://www.pixiv.net/"}
         try:
             req = urllib.request.Request(image_url, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as res:
@@ -153,11 +190,10 @@ class PixivRankingPlugin(BaseMetadataProvider):
 #   python pixiv_ranking.py --mode weekly --content illust
 #   python pixiv_ranking.py --mode monthly --content manga
 #
-# ⚠️ 참고: script.js가 브라우저에서 fetch()로 호출하는 "pixiv_get"은
-# 이 CLI 스크립트를 서버에서 직접 실행하는 것이 아니라, 위 클래스의
-# pixiv_get() 메서드가 Flask 라우트로 노출된 것을 호출하는 것입니다.
-# (브라우저가 서버의 .py 파일을 직접 실행시킬 수는 없습니다.)
-# 이 __main__ 블록은 순수하게 터미널에서 수동으로 테스트할 때만 쓰입니다.
+# ⚠️ 참고: script.js가 브라우저에서 fetch()로 호출하는 건 위에서 @app.route로
+# 등록한 /api/dashboard/pixiv-ranking (Flask 라우트)입니다. 이 CLI 블록을
+# 서버가 실행하는 게 아니라, 순수하게 터미널에서 수동으로 pixiv 크롤링
+# 로직만 테스트하고 싶을 때 쓰는 용도입니다.
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse

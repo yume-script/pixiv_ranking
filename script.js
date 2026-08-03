@@ -1,7 +1,7 @@
-// ⚠️ 아래 두 경로는 BookOasis 코어의 실제 라우팅 규칙에 맞춰 확인/수정이 필요합니다.
-// (예: 플러그인 네임스페이스 하위 상대경로라고 가정한 값입니다.)
-const API_BASE = "pixiv_get";
-const PROXY_BASE = "proxy_image";
+// pixiv_ranking.py 안에서 @app.route(...)로 직접 등록한 실제 라우트
+// (aladin_bestseller.py와 동일한 방식, 서버 소스로 확인됨)
+const API_BASE = "/api/dashboard/pixiv-ranking";
+const PROXY_BASE = "/api/dashboard/pixiv-ranking/image-proxy";
 
 // 랭킹 조회 로직을 별도 함수로 분리
 async function fetchRanking() {
