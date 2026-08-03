@@ -1,44 +1,44 @@
-document.getElementById('load-btn').addEventListener('click', async () => {
+// 랭킹 조회 로직을 별도 함수로 분리
+async function fetchRanking() {
     const mode = document.getElementById('mode-select').value;
     const content = document.getElementById('content-select').value;
     const grid = document.getElementById('pixiv-grid');
     
-    console.log(`[UI] 버튼 클릭: mode=${mode}, content=${content}`);
     grid.innerHTML = "데이터 불러오는 중...";
+    console.log(`[UI] 조회 시작: ${mode} / ${content}`);
     
     try {
-        console.log("[UI] API fetch 시도...");
-        const response = await fetch(`/plugin/metadata/pixiv_ranking/pixiv_get.py?mode=${mode}&content=${content}`);
+        // 서버의 실제 API 엔드포인트 경로를 확인하여 수정하세요
+        const response = await fetch(`/api/metadata/plugin/pixiv_ranking/fetch_ranking?mode=${mode}&content=${content}`);
         
-        console.log(`[UI] 응답 상태: ${response.status}`);
-        if (!response.ok) throw new Error(`서버 응답 오류: ${response.statusText}`);
+        if (!response.ok) throw new Error('서버 응답 오류: ' + response.status);
         
         const data = await response.json();
-        console.log("[UI] JSON 데이터 파싱 완료:", data);
-
-        if (!data || data.length === 0) {
-            console.warn("[UI] 데이터가 비어있습니다.");
-            grid.innerHTML = "데이터 없음";
-            return;
-        }
-
         grid.innerHTML = "";
-        data.forEach((item, index) => {
-            console.log(`[UI] 이미지 렌더링 시도 ${index + 1}: ${item.title}`);
-            const proxyUrl = `/plugin/metadata/pixiv_ranking/proxy_image?url=${encodeURIComponent(item.url)}`;
-            
+        
+        data.forEach(item => {
+            // 이미지 주소 처리 (필요시 프록시 엔드포인트 적용)
             grid.innerHTML += `
                 <div class="pixiv-item">
-                    <img src="${proxyUrl}" loading="lazy" 
-                         onload="console.log('[UI] 로딩 성공: ${item.title}')" 
-                         onerror="console.error('[UI] 로딩 실패: ${item.url}'); this.style.display='none'">
+                    <img src="${item.url}" loading="lazy" onerror="this.style.display='none'">
                     <p>${item.title}</p>
                 </div>
             `;
         });
-        console.log("[UI] 렌더링 프로세스 종료");
-    } catch (error) {
-        console.error("[UI] 치명적 오류 발생:", error);
-        grid.innerHTML = "오류 발생: " + error.message;
+    } catch (e) {
+        console.error(e);
+        grid.innerHTML = "데이터 로드 실패. API 경로를 확인하세요.";
     }
+}
+
+// 이벤트 리스너 등록
+document.getElementById('load-btn').addEventListener('click', fetchRanking);
+
+// [중요] 페이지 로드 완료 시 일일/종합 랭킹 자동 실행
+window.addEventListener('DOMContentLoaded', () => {
+    console.log("[UI] 페이지 로드 완료, 초기 데이터 조회 시작");
+    // 초기값 세팅 (일일/종합)
+    document.getElementById('mode-select').value = 'daily';
+    document.getElementById('content-select').value = 'all';
+    fetchRanking();
 });
