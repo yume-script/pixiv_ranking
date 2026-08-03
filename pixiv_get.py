@@ -35,10 +35,11 @@ def get_pixiv_ranking(mode, content):
             print(f"[{mode.upper()} / {content.upper()}] 랭킹 목록:")
             for item in contents:
                 # 2. 'url' 필드는 썸네일 이미지 URL이므로,
-                #    illust_id를 이용해 실제 작품 페이지 URL을 조립합니다.
+                #    illust_id를 이용해 실제 작품 페이지 URL을 별도로 조립합니다.
                 illust_id = item.get('illust_id')
                 page_url = f"https://www.pixiv.net/artworks/{illust_id}"
-                print(f"- {item.get('title')} | {page_url}")
+                thumb_url = item.get('url')
+                print(f"- {item.get('title')} | 작품: {page_url} | 썸네일: {thumb_url}")
             
     except Exception as e:
         print(f"오류 발생: {e}")
