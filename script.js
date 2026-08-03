@@ -1,10 +1,14 @@
 // Pixiv 랭킹 플러그인 - 카테고리 레벨 풀페이지 UI 로직
 //
-// 주의: 코어가 이 풀페이지에 아이템 데이터를 정확히 어떤 방식으로 전달하는지
-// (내장 JSON vs 별도 fetch 엔드포인트) 문서로 확인되지 않은 상태이므로,
-// 아래 loadItems()는 여러 후보를 순서대로 시도합니다.
-// 브라우저 콘솔에 "[pixiv_ranking]" 로그가 각 시도 결과를 남기니,
-// 실패 시 콘솔을 확인해서 실제 데이터 소스를 찾는 데 활용하세요.
+// index.html이 [플러그인] 카테고리 화면에 마운트되면, 이 스크립트가 아이템 데이터를
+// 가져와 렌더링합니다. 코어는 플러그인이 자체 라우트를 만드는 걸 지원하지 않으므로,
+// 이 fetch가 부르는 URL은 코어가 미리 제공하는 공용 엔드포인트일 것으로 추정하고
+// 그럴듯한 후보들을 순서대로 시도합니다.
+//
+// 어떤 후보가 성공했는지는:
+//   1) 브라우저 콘솔에 [pixiv_ranking] 로그로 남고
+//   2) 성공 시 화면 상단에도 잠깐 파란 배너로 "사용된 URL: ..." 표시됩니다
+// 이 정보를 알려주시면 나머지 후보 코드를 지우고 하나로 확정할 수 있습니다.
 
 (function () {
   "use strict";
@@ -38,12 +42,31 @@
       return;
     }
     els.status.style.display = "block";
-    els.status.className = "pxr-status" + (mode === "loading" ? " pxr-loading" : "");
+    els.status.className = "pxr-status" + (mode ? " pxr-" + mode : "");
     els.status.textContent = message;
   }
 
   // ---------------------------------------------------------------
-  // 1) 데이터 소스 탐색 (여러 후보를 순서대로 시도)
+  // 0) 현재 페이지에서 db_type 등 힌트 추출 (URL 쿼리스트링 기반 추정)
+  // ---------------------------------------------------------------
+  function guessDbType() {
+    const qs = new URLSearchParams(window.location.search);
+    const candidates = ["db_type", "dbType", "db", "library_type", "libraryType"];
+    for (const key of candidates) {
+      const v = qs.get(key);
+      if (v) return v;
+    }
+    return "general";
+  }
+
+  function guessLimit() {
+    const qs = new URLSearchParams(window.location.search);
+    const v = qs.get("limit");
+    return v || "80";
+  }
+
+  // ---------------------------------------------------------------
+  // 1) 데이터 소스 탐색: 내장 JSON/전역변수 먼저(비용 없음), 그다음 fetch 후보들
   // ---------------------------------------------------------------
 
   function tryEmbeddedJsonScriptTag() {
@@ -58,8 +81,8 @@
       if (el && el.textContent) {
         try {
           const parsed = JSON.parse(el.textContent);
-          log("내장 <script type=application/json> 태그에서 데이터 발견:", id);
-          return parsed;
+          log("내장 JSON 태그에서 데이터 발견:", id);
+          return { payload: parsed, source: "embedded:#" + id };
         } catch (e) {
           warn("내장 JSON 파싱 실패:", id, e);
         }
@@ -78,14 +101,13 @@
     for (const name of candidates) {
       if (window[name] !== undefined) {
         log("전역 변수에서 데이터 발견:", name);
-        return window[name];
+        return { payload: window[name], source: "global:" + name };
       }
     }
-    // data-* 속성에 JSON이 있는 경우
     if (els.root && els.root.dataset && els.root.dataset.items) {
       try {
         log("root 엘리먼트 data-items 속성에서 데이터 발견");
-        return JSON.parse(els.root.dataset.items);
+        return { payload: JSON.parse(els.root.dataset.items), source: "data-items attribute" };
       } catch (e) {
         warn("data-items 파싱 실패:", e);
       }
@@ -94,14 +116,26 @@
   }
 
   async function tryFetchEndpoints() {
+    const dbType = guessDbType();
+    const limit = guessLimit();
+    const qs1 = `db_type=${encodeURIComponent(dbType)}&limit=${encodeURIComponent(limit)}`;
+
     const candidateUrls = [
-      `/api/plugins/${PLUGIN_ID}/dashboard-data`,
-      `/api/plugins/${PLUGIN_ID}/dashboard_data`,
-      `/plugins/${PLUGIN_ID}/dashboard-data`,
-      `/plugin/${PLUGIN_ID}/dashboard-data`,
-      `/dashboard/widget/${PLUGIN_ID}`,
-      `/dashboard/widget/${PLUGIN_ID}/data`,
-      `/api/dashboard/${PLUGIN_ID}`,
+      // 플러그인 대시보드 데이터 조회용으로 흔히 쓰일 법한 REST 패턴들
+      `/api/plugins/${PLUGIN_ID}/dashboard-data?${qs1}`,
+      `/api/plugins/${PLUGIN_ID}/dashboard_data?${qs1}`,
+      `/api/plugin/${PLUGIN_ID}/dashboard-data?${qs1}`,
+      `/api/dashboard/plugin/${PLUGIN_ID}?${qs1}`,
+      `/api/dashboard/${PLUGIN_ID}?${qs1}`,
+      `/api/dashboard/widget/${PLUGIN_ID}?${qs1}`,
+      `/dashboard/widget/${PLUGIN_ID}/data?${qs1}`,
+      `/dashboard/widget/${PLUGIN_ID}?${qs1}`,
+      `/plugins/${PLUGIN_ID}/dashboard-data?${qs1}`,
+      `/plugin/${PLUGIN_ID}/dashboard-data?${qs1}`,
+      `/api/plugins/${PLUGIN_ID}/data?${qs1}`,
+      `/api/plugins/dashboard/${PLUGIN_ID}?${qs1}`,
+      `/api/plugin-category/${PLUGIN_ID}?${qs1}`,
+      `/api/plugin_category/${PLUGIN_ID}?${qs1}`,
     ];
 
     for (const url of candidateUrls) {
@@ -111,9 +145,14 @@
           log("fetch 실패 (status " + res.status + "):", url);
           continue;
         }
+        const contentType = res.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          log("fetch 응답이 JSON이 아님, 건너뜀:", url, contentType);
+          continue;
+        }
         const json = await res.json();
         log("fetch 성공:", url);
-        return json;
+        return { payload: json, source: "fetch:" + url };
       } catch (e) {
         log("fetch 에러:", url, e && e.message);
       }
@@ -133,28 +172,31 @@
   async function loadItems() {
     setStatus("Pixiv 랭킹 데이터를 불러오는 중입니다...", "loading");
 
-    let payload = tryEmbeddedJsonScriptTag();
-    if (!payload) payload = tryGlobalVariables();
-    if (!payload) payload = await tryFetchEndpoints();
+    let found = tryEmbeddedJsonScriptTag();
+    if (!found) found = tryGlobalVariables();
+    if (!found) found = await tryFetchEndpoints();
 
-    const items = extractItemsArray(payload);
+    const items = found ? extractItemsArray(found.payload) : null;
 
     if (!items || items.length === 0) {
-      warn("어떤 방식으로도 데이터를 찾지 못했습니다. 콘솔의 [pixiv_ranking] 로그를 확인하세요.");
+      warn("어떤 방식으로도 데이터를 찾지 못했습니다. 아래 URL 후보들이 모두 실패/미스매치했습니다.");
       setStatus(
         "Pixiv 랭킹 데이터를 불러오지 못했습니다.\n" +
-          "브라우저 콘솔(F12 > Console)에서 [pixiv_ranking] 로그를 확인해 주세요.\n" +
-          "이 화면은 아직 실제 데이터 전달 방식이 확정되지 않아 임시 진단용으로 동작 중입니다."
+          "브라우저 콘솔(F12 > Console)의 [pixiv_ranking] 로그를 확인해서 실패한 URL 목록을 알려주세요.\n" +
+          "정확한 데이터 엔드포인트가 확인되면 이 화면이 정상 동작하도록 코드가 단순화됩니다."
       );
       return;
     }
 
-    setStatus(null);
+    setStatus("데이터 로드 성공 (소스: " + found.source + ") - 콘솔에서 자세히 확인 가능", "success");
+    log("사용된 데이터 소스:", found.source, "/ 아이템 개수:", items.length);
+    setTimeout(() => setStatus(null), 4000);
+
     renderItems(items);
   }
 
   // ---------------------------------------------------------------
-  // 2) 렌더링 (탭 전환은 이미 받아온 items를 클라이언트에서 필터링)
+  // 2) 렌더링 (드롭다운 필터링은 이미 받아온 items를 클라이언트에서 처리)
   // ---------------------------------------------------------------
 
   function pickImage(item) {
@@ -183,7 +225,6 @@
   }
 
   function renderItems(items) {
-    // content_label -> Set(mode_label) : 실제 로드된 데이터 기준으로 유효한 조합만 구성
     const contentToModes = new Map();
     for (const item of items) {
       const c = pickContentLabel(item);

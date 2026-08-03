@@ -77,6 +77,12 @@
   color: #7dd3fc;
 }
 
+.pxr-status.pxr-success {
+  background: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.25);
+  color: #86efac;
+}
+
 .pxr-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
