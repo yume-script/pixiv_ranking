@@ -5,23 +5,20 @@ document.getElementById('load-btn').addEventListener('click', async () => {
     
     grid.innerHTML = "로딩 중...";
     
-    // BookOasis의 플러그인 엔드포인트를 통해 파이썬 함수 호출
+    // 랭킹 목록 데이터 가져오기
     const res = await fetch(`/api/plugin/pixiv_ranking/get_pixiv_data?mode=${mode}&content=${content}`);
     const data = await res.json();
     
     grid.innerHTML = "";
     data.forEach(item => {
+        // 이미지는 우리가 만든 proxy_image 엔드포인트를 통함
+        const proxyUrl = `/api/plugin/pixiv_ranking/proxy_image?url=${encodeURIComponent(item.url)}`;
+        
         grid.innerHTML += `
             <div class="pixiv-item">
-                <img src="${item.url}" loading="lazy">
+                <img src="${proxyUrl}" loading="lazy">
                 <p>${item.title}</p>
             </div>
         `;
     });
 });
-
-// 테마 동기화 모니터링
-const themeObserver = new MutationObserver(() => {
-    // 테마 변경 시 필요한 로직 추가 가능
-});
-themeObserver.observe(document.documentElement, { attributes: true });
