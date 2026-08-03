@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
-from .pixiv_ranking import PixivRankingMetadataProvider
+from .pixiv_ranking import PixivRankingPlugin
 
-__all__ = ["PixivRankingMetadataProvider"]
+__all__ = ["PixivRankingPlugin"]
