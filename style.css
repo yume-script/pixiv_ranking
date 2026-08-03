@@ -1,0 +1,155 @@
+/* Pixiv 랭킹 플러그인 - 카테고리 레벨 풀페이지 UI 스타일 */
+
+.pxr-root {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 1.25rem 1.5rem;
+  color: #cbd5e1;
+  font-family: inherit;
+}
+
+.pxr-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.pxr-title {
+  margin: 0;
+  font-size: 1.3rem;
+  color: #f8fafc;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pxr-title i {
+  color: #38bdf8;
+}
+
+.pxr-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.pxr-tab-btn {
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.pxr-tab-btn:hover {
+  color: #e2e8f0;
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.pxr-tab-btn.active {
+  background: #38bdf8;
+  color: #0f172a;
+  border-color: #38bdf8;
+  font-weight: 600;
+}
+
+.pxr-status {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.pxr-status.pxr-loading {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.25);
+  color: #7dd3fc;
+}
+
+.pxr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
+}
+
+.pxr-card {
+  background: rgba(30, 41, 59, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  overflow: hidden;
+  text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.pxr-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.pxr-card-cover {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: #1e293b;
+  overflow: hidden;
+}
+
+.pxr-card-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pxr-card-body {
+  padding: 0.6rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.pxr-card-title {
+  color: #f8fafc;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pxr-card-author {
+  color: #94a3b8;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pxr-card-badge {
+  align-self: flex-start;
+  margin-top: 0.15rem;
+  font-size: 0.68rem;
+  color: #a855f7;
+  background: rgba(168, 85, 247, 0.12);
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+}
+
+.pxr-empty {
+  color: #64748b;
+  font-size: 0.9rem;
+  padding: 2rem 0;
+  text-align: center;
+}

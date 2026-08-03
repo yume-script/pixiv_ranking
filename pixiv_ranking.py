@@ -2,20 +2,15 @@
 """
 Pixiv 랭킹 이미지 위젯 플러그인 (BookOasis metadata plugin)
 
-- 대시보드에 pixiv 일간/주간/월간 랭킹 이미지를 카드 형태로 노출합니다.
+- [플러그인] 카테고리의 독립된 단독 탭(all_desk_tab)으로 렌더링됩니다.
+- 설정에서 체크한 여러 랭킹 종류(일간/주간/월간 등)를 한 번에 가져와
+  제목 앞에 [일간]/[주간] 라벨을 붙여 하나의 목록으로 함께 보여줍니다.
+  (코어가 위젯 내부의 실시간 탭 전환 UI를 지원하지 않아, index.html/script.js는
+   설정 화면에만 적용되고 실제 위젯 화면에는 반영되지 않습니다 - 가이드 4절 참고)
 - PHPSESSID(pixiv 로그인 세션 쿠키)를 플러그인 설정에서 입력해야 동작합니다.
 - 외부 패키지(requests) 의존성 없이 파이썬 표준 라이브러리(urllib)만 사용합니다.
-- logging 모듈로 각 단계 진행상황을 서버 로그에 남겨 문제 진단이 쉽도록 했습니다.
-
-중요:
-- pixiv의 이미지 서버(i.pximg.net)는 Referer 헤더가 없는 요청(브라우저의 일반 <img> 태그 포함)을
-  차단합니다. 이 때문에 원본 이미지 URL을 그대로 프런트엔드에 내려주면 제목/텍스트는 보여도
-  이미지만 깨지는 문제가 발생합니다.
-- 이를 우회하기 위해 이 플러그인은 서버 쪽에서 Referer 헤더를 포함해 이미지를 직접 내려받은 뒤
-  base64 data URI로 변환해서 응답합니다. 브라우저는 pixiv 서버에 전혀 접근하지 않으므로
-  Referer 차단 문제가 발생하지 않습니다.
-- 프런트엔드는 이 플러그인의 아이템을 "도서 카드"(cover/title/author/publisher)로 렌더링하므로
-  이미지 필드는 'cover' 키를 최우선으로 채웁니다 (다른 후보 키도 동시에 채워 호환성 확보).
+- 이미지 서버(i.pximg.net)의 Referer 핫링크 차단을 우회하기 위해
+  서버에서 이미지를 직접 내려받아 base64 data URI로 임베드합니다.
 
 주의:
 - pixiv 이용약관상 대량 크롤링/재배포는 금지되어 있으니 개인 열람용으로만 사용하십시오.
@@ -33,6 +28,17 @@ from plugins.metadata.base import BaseMetadataProvider
 
 logger = logging.getLogger("plugin.pixiv_ranking")
 
+# 표시 라벨 매핑
+_MODE_LABELS = {
+    "daily": "일간",
+    "weekly": "주간",
+    "monthly": "월간",
+    "rookie": "신인",
+    "original": "오리지널",
+    "male": "남자인기",
+    "female": "여자인기",
+}
+
 
 class PixivRankingMetadataProvider(BaseMetadataProvider):
     id = "pixiv_ranking"
@@ -46,21 +52,13 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             "type": "password",
             "required": True,
         },
-        {
-            "key": "RANKING_MODE",
-            "label": "랭킹 종류",
-            "type": "select",
-            "default": "daily",
-            "options": [
-                {"value": "daily", "label": "일간"},
-                {"value": "weekly", "label": "주간"},
-                {"value": "monthly", "label": "월간"},
-                {"value": "rookie", "label": "신인"},
-                {"value": "original", "label": "오리지널"},
-                {"value": "male", "label": "남자에게 인기"},
-                {"value": "female", "label": "여자에게 인기"},
-            ],
-        },
+        {"key": "SHOW_DAILY", "label": "일간 랭킹 표시", "type": "checkbox", "default": True},
+        {"key": "SHOW_WEEKLY", "label": "주간 랭킹 표시", "type": "checkbox", "default": True},
+        {"key": "SHOW_MONTHLY", "label": "월간 랭킹 표시", "type": "checkbox", "default": True},
+        {"key": "SHOW_ROOKIE", "label": "신인 랭킹 표시", "type": "checkbox", "default": False},
+        {"key": "SHOW_ORIGINAL", "label": "오리지널 랭킹 표시", "type": "checkbox", "default": False},
+        {"key": "SHOW_MALE", "label": "남자에게 인기 표시", "type": "checkbox", "default": False},
+        {"key": "SHOW_FEMALE", "label": "여자에게 인기 표시", "type": "checkbox", "default": False},
         {
             "key": "IMAGE_SIZE",
             "label": "이미지 크기",
@@ -73,10 +71,10 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             ],
         },
         {
-            "key": "FETCH_LIMIT",
-            "label": "가져올 이미지 개수",
+            "key": "PER_MODE_LIMIT",
+            "label": "랭킹 종류별 가져올 이미지 개수",
             "type": "number",
-            "default": 10,
+            "default": 8,
         },
     ]
 
@@ -85,7 +83,8 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "subtitle": "pixiv 랭킹 이미지",
         "provider": "pixiv",
         "icon": "fa-solid fa-image",
-        "limit": 10,
+        "limit": 60,
+        "all_desk_tab": True,  # 공통 데스크 카드가 아닌 [플러그인] 카테고리 단독 전체화면 탭으로 렌더링
         "supported_types": ["general"],
     }
 
@@ -106,6 +105,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
     _REFERER = "https://www.pixiv.net/"
     _TIMEOUT = 10
     _MAX_IMAGE_BYTES = 3 * 1024 * 1024
+    _MAX_TOTAL_ITEMS = 60
 
     # ---------------------------------------------------------------
     # 코어 필수 계약
@@ -165,19 +165,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
     def _fetch_items(self, db_type, limit=10):
         cfg = self.get_plugin_config(db_type, default={})
         phpsessid = cfg.get("PHPSESSID")
-        mode = cfg.get("RANKING_MODE", "daily")
         image_size = cfg.get("IMAGE_SIZE", "small")
-
-        logger.info(
-            "[pixiv_ranking] 설정 로드: mode=%s, image_size=%s, PHPSESSID 설정됨=%s",
-            mode, image_size, bool(phpsessid),
-        )
-
-        try:
-            fetch_limit = int(cfg.get("FETCH_LIMIT", limit) or limit)
-        except (TypeError, ValueError):
-            fetch_limit = limit
-        fetch_limit = max(1, min(fetch_limit, 50))
 
         if not phpsessid:
             logger.warning("[pixiv_ranking] PHPSESSID가 비어있음")
@@ -186,35 +174,58 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
                 "error": "PHPSESSID가 설정되지 않았습니다. 플러그인 설정에서 pixiv 로그인 세션 쿠키를 입력하고 저장하십시오.",
             }
 
-        cookies = {"PHPSESSID": phpsessid}
+        try:
+            per_mode_limit = int(cfg.get("PER_MODE_LIMIT", 8) or 8)
+        except (TypeError, ValueError):
+            per_mode_limit = 8
+        per_mode_limit = max(1, min(per_mode_limit, 30))
 
-        illust_ids = self._get_ranking_illust_ids(mode, cookies, fetch_limit)
-        logger.info("[pixiv_ranking] 랭킹 페이지에서 작품 ID %d개 추출", len(illust_ids))
+        enabled_modes = []
+        mode_flags = [
+            ("daily", "SHOW_DAILY", True),
+            ("weekly", "SHOW_WEEKLY", True),
+            ("monthly", "SHOW_MONTHLY", True),
+            ("rookie", "SHOW_ROOKIE", False),
+            ("original", "SHOW_ORIGINAL", False),
+            ("male", "SHOW_MALE", False),
+            ("female", "SHOW_FEMALE", False),
+        ]
+        for mode, key, default in mode_flags:
+            if cfg.get(key, default):
+                enabled_modes.append(mode)
 
-        if not illust_ids:
+        if not enabled_modes:
             return {
                 "success": False,
-                "error": (
-                    "랭킹 페이지에서 작품을 하나도 찾지 못했습니다. "
-                    "PHPSESSID가 만료되었거나 잘못됐을 가능성이 높습니다."
-                ),
+                "error": "표시할 랭킹 종류가 하나도 선택되지 않았습니다. 플러그인 설정에서 최소 1개 이상 체크해 주세요.",
             }
 
-        items = []
-        for illust_id in illust_ids[:fetch_limit]:
-            detail = self._get_illust_detail(illust_id, cookies)
-            if not detail:
-                logger.warning("[pixiv_ranking] illust_id=%s 상세 조회 실패, 건너뜀", illust_id)
-                continue
-            item = self._build_item(detail, illust_id, image_size, cookies)
-            items.append(item)
+        cookies = {"PHPSESSID": phpsessid}
 
-        logger.info("[pixiv_ranking] 최종 아이템 %d개 구성 완료", len(items))
+        items = []
+        for mode in enabled_modes:
+            if len(items) >= self._MAX_TOTAL_ITEMS:
+                break
+            mode_label = _MODE_LABELS.get(mode, mode)
+            illust_ids = self._get_ranking_illust_ids(mode, cookies, per_mode_limit)
+            logger.info("[pixiv_ranking] [%s] 작품 ID %d개 추출", mode_label, len(illust_ids))
+
+            for illust_id in illust_ids:
+                if len(items) >= self._MAX_TOTAL_ITEMS:
+                    break
+                detail = self._get_illust_detail(illust_id, cookies)
+                if not detail:
+                    logger.warning("[pixiv_ranking] [%s] illust_id=%s 상세 조회 실패, 건너뜀", mode_label, illust_id)
+                    continue
+                item = self._build_item(detail, illust_id, image_size, cookies, mode_label)
+                items.append(item)
+
+        logger.info("[pixiv_ranking] 최종 아이템 %d개 구성 완료 (모드: %s)", len(items), ", ".join(enabled_modes))
 
         if not items:
             return {
                 "success": False,
-                "error": "작품 ID는 찾았지만 상세 정보를 하나도 가져오지 못했습니다.",
+                "error": "선택한 랭킹에서 이미지를 하나도 가져오지 못했습니다. PHPSESSID 유효성을 확인해 주세요.",
             }
 
         return {"success": True, "items": items}
@@ -222,18 +233,15 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
     def _get_ranking_illust_ids(self, mode, cookies, limit):
         params = urllib.parse.urlencode({"mode": mode})
         url = f"https://www.pixiv.net/ranking.php?{params}"
-        logger.info("[pixiv_ranking] 랭킹 페이지 요청: %s", url)
 
         try:
             status, body = self._http_get_text(url, cookies=cookies)
         except urllib.error.HTTPError as e:
-            logger.error("[pixiv_ranking] 랭킹 페이지 HTTP 에러: %s %s", e.code, e.reason)
-            raise RuntimeError(f"랭킹 페이지 요청 실패 (HTTP {e.code}): {e.reason}")
+            logger.error("[pixiv_ranking] [%s] 랭킹 페이지 HTTP 에러: %s %s", mode, e.code, e.reason)
+            return []
         except urllib.error.URLError as e:
-            logger.error("[pixiv_ranking] 랭킹 페이지 접속 실패: %s", e.reason)
-            raise RuntimeError(f"랭킹 페이지 접속 실패: {e.reason}")
-
-        logger.info("[pixiv_ranking] 랭킹 페이지 응답 status=%s, 길이=%d bytes", status, len(body))
+            logger.error("[pixiv_ranking] [%s] 랭킹 페이지 접속 실패: %s", mode, e.reason)
+            return []
 
         ids = re.findall(r"/artworks/(\d+)", body)
         seen = set()
@@ -261,21 +269,13 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             return None
 
         if data.get("error"):
-            logger.warning(
-                "[pixiv_ranking] illust_id=%s API 에러 응답: %s", illust_id, data.get("message")
-            )
+            logger.warning("[pixiv_ranking] illust_id=%s API 에러 응답: %s", illust_id, data.get("message"))
             return None
 
         return data.get("body")
 
-    def _build_item(self, body, illust_id, image_size, cookies):
+    def _build_item(self, body, illust_id, image_size, cookies, mode_label):
         urls = body.get("urls") or {}
-
-        # 진단용: 실제 urls 딕셔너리에 어떤 키가 들어있는지 항상 로그로 남김
-        logger.info(
-            "[pixiv_ranking] illust_id=%s urls 키 목록=%s",
-            illust_id, list(urls.keys()) if isinstance(urls, dict) else type(urls),
-        )
 
         remote_url = None
         if isinstance(urls, dict):
@@ -287,40 +287,17 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
 
         image_value = remote_url
 
-        if not remote_url:
-            logger.warning(
-                "[pixiv_ranking] illust_id=%s remote_url을 찾지 못함 (urls=%s)", illust_id, urls
-            )
-        else:
-            logger.info("[pixiv_ranking] illust_id=%s 이미지 다운로드 시도: %s", illust_id, remote_url)
+        if remote_url:
             try:
                 status, content_type, raw = self._http_get_bytes(remote_url, cookies=cookies)
-                logger.info(
-                    "[pixiv_ranking] illust_id=%s 이미지 응답 status=%s, content_type=%s, bytes=%d",
-                    illust_id, status, content_type, len(raw) if raw else 0,
-                )
-                if status == 200 and raw:
-                    if len(raw) > self._MAX_IMAGE_BYTES:
-                        logger.warning(
-                            "[pixiv_ranking] illust_id=%s 이미지 용량 초과(%d bytes) - base64 임베드 생략",
-                            illust_id, len(raw),
-                        )
-                    else:
-                        b64 = base64.b64encode(raw).decode("ascii")
-                        image_value = f"data:{content_type};base64,{b64}"
-                        logger.info(
-                            "[pixiv_ranking] illust_id=%s 이미지 base64 임베드 완료 (%d bytes)",
-                            illust_id, len(raw),
-                        )
-            except urllib.error.HTTPError as e:
-                logger.warning(
-                    "[pixiv_ranking] illust_id=%s 이미지 다운로드 HTTP 에러: %s %s",
-                    illust_id, e.code, e.reason,
-                )
+                if status == 200 and raw and len(raw) <= self._MAX_IMAGE_BYTES:
+                    b64 = base64.b64encode(raw).decode("ascii")
+                    image_value = f"data:{content_type};base64,{b64}"
             except Exception as e:
                 logger.warning("[pixiv_ranking] illust_id=%s 이미지 다운로드 실패: %s", illust_id, e)
 
-        title = body.get("illustTitle") or f"작품 {illust_id}"
+        raw_title = body.get("illustTitle") or f"작품 {illust_id}"
+        title = f"[{mode_label}] {raw_title}"
         author = body.get("userName")
         artwork_url = f"https://www.pixiv.net/artworks/{illust_id}"
 
@@ -330,6 +307,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             "url": artwork_url,
             "link": artwork_url,
             "illust_id": illust_id,
+            "category": mode_label,
             "cover": image_value,
             "cover_url": image_value,
             "image_url": image_value,

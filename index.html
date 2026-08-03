@@ -1,0 +1,22 @@
+<!-- Pixiv 랭킹 플러그인 - 카테고리 레벨 풀페이지 UI -->
+<!--
+  주의: 이 페이지가 데이터를 실제로 어떤 경로(내장 JSON / 별도 fetch 엔드포인트)로
+  받는지 아직 확정되지 않아, 여러 후보를 순서대로 시도하는 방어적 구조로 작성했습니다.
+  script.js의 콘솔 로그(console.log/[pixiv_ranking])를 보면 어떤 경로가 시도/실패했는지
+  확인할 수 있습니다. 실제 데이터 소스가 확인되면 script.js의 loadItems() 함수만
+  해당 방식으로 단순화하면 됩니다.
+-->
+<div id="pixiv-ranking-root" class="pxr-root">
+  <div class="pxr-header">
+    <h2 class="pxr-title"><i class="fa-solid fa-image"></i> Pixiv 랭킹</h2>
+    <div class="pxr-tabs" id="pxr-tabs">
+      <!-- 탭 버튼은 실제 데이터의 category 값들을 기반으로 script.js가 동적으로 채웁니다 -->
+    </div>
+  </div>
+
+  <div id="pxr-status" class="pxr-status" style="display:none;"></div>
+
+  <div id="pxr-grid" class="pxr-grid">
+    <!-- 아이템 카드는 script.js가 동적으로 채웁니다 -->
+  </div>
+</div>
