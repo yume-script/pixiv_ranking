@@ -61,11 +61,14 @@ pixiv_ranking/
   index.html        # 카테고리 풀페이지 뷰 마크업
   style.css         # 카테고리 풀페이지 뷰 스타일
   script.js         # 카테고리 풀페이지 뷰 동작 (데이터 요청, 렌더링, 드롭다운 처리)
+  settings.html     # 환경설정 커스텀 폼 (평소엔 접혀 있다가 클릭 시에만 펼쳐짐)
+  settings.css      # 환경설정 커스텀 폼 스타일
 ```
 
-`settings.html`/`settings.css`/`settings.js`(환경설정 커스텀 폼)와 `requirements.txt`는
-현재 사용하지 않습니다. 설정 화면은 `config_schema` 기반 코어 자동 생성 폼을 그대로 쓰고,
-외부 파이썬 패키지 의존성도 없습니다(표준 라이브러리만 사용).
+`settings.html`이 있으면 `config_schema` 기반 코어 자동 생성 폼 대신 이 커스텀 폼이 사용됩니다.
+`settings.js`와 `requirements.txt`는 사용하지 않습니다 — 값 저장은 `input`/`select`의 `name` 속성이
+설정 키(`PHPSESSID`/`MODE`/`CONTENT`)와 일치하면 코어가 자동으로 처리하고, 외부 파이썬 패키지
+의존성도 없습니다(표준 라이브러리만 사용).
 
 ---
 
@@ -93,8 +96,8 @@ pixiv_ranking/
   필요해서 제외했습니다.
 - **원본(고해상도) 이미지 URL은 참고용 추정치**(`original_url_guess`)로만 제공됩니다.
   원본이 PNG인 작품은 이 변환만으로는 404가 날 수 있습니다.
-- **환경설정 화면의 라벨/입력 레이아웃**은 코어가 `config_schema`로 자동 생성하는 폼이라
-  플러그인 코드로 세밀하게 제어할 수 없습니다. 라벨을 짧게 유지하는 정도로만 대응했습니다.
+- **환경설정 화면 레이아웃**은 `settings.html`/`settings.css` 커스텀 폼으로 라벨-입력을 좌우로
+  배치했고, 평소엔 `<details>`로 접혀 있다가 클릭 시에만 펼쳐집니다.
 - `update_manifest.enabled`는 `False`로 꺼두었습니다. GitHub 리포지토리에 올리신 뒤
   `raw_base_url`을 실제 경로로 바꾸고 `True`로 전환하세요.
 
