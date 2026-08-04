@@ -95,6 +95,18 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
                 {"value": "manga", "label": "만화 (manga)"},
             ],
         },
+        {
+            "key": "LIMIT",
+            "label": "표시 개수",
+            "type": "select",
+            "default": "50",
+            "options": [
+                {"value": "10", "label": "10개"},
+                {"value": "20", "label": "20개"},
+                {"value": "30", "label": "30개"},
+                {"value": "50", "label": "50개 (최대)"},
+            ],
+        },
     ]
 
     # 자동 업데이트를 지원하려면 raw_base_url을 실제 호스팅 리포지토리로 바꿔서 사용
@@ -108,14 +120,14 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "show_sample_update_button": False,
     }
 
-    #dashboard_widget = {
-    #    "title": "Pixiv 랭킹",
-    #    "subtitle": "픽시브 실시간 랭킹",
-    #    "provider": "Pixiv",
-    #    "icon": "fa-solid fa-image",
-    #    "limit": 10,
-    #    "supported_types": ["general"],
-    #}
+    dashboard_widget = {
+        "title": "Pixiv 랭킹",
+        "subtitle": "픽시브 실시간 랭킹",
+        "provider": "Pixiv",
+        "icon": "fa-solid fa-image",
+        "limit": 10,
+        "supported_types": ["general"],
+    }
 
     # 코어 좌측/상단 "카테고리" 내비게이션에 별도 메뉴로 노출되는 풀페이지 탭 계약.
     # (guide_plugins.md에는 없지만 random_gallery 실제 소스로 확인된 계약:
@@ -273,10 +285,22 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         session_id = cfg.get("PHPSESSID")
         mode = self._get_request_override("mode") or cfg.get("MODE", "daily")
         content = self._get_request_override("content") or cfg.get("CONTENT", "all")
+
+        # 설정에 저장된 "표시 개수"가 있으면, 프론트엔드가 요청한 limit보다
+        # 우선 적용한다 (화면 상단/카드 위젯 어느 쪽에서 오든 동일하게 적용).
+        try:
+            configured_limit = int(cfg.get("LIMIT", 50))
+        except (TypeError, ValueError):
+            configured_limit = 50
+        configured_limit = max(1, min(configured_limit, 50))
+        effective_limit = min(limit, configured_limit) if limit else configured_limit
+
         logger.warning(
-            "[pixiv_ranking] 0/3 설정 로드 완료: mode=%s, content=%s, session=%s"
+            "[pixiv_ranking] 0/3 설정 로드 완료: mode=%s, content=%s, session=%s,"
+            " 요청 limit=%s, 설정 표시개수=%s, 최종 limit=%s"
             " (드롭다운으로 요청된 값이 있으면 그 값을 우선 사용)",
             mode, content, "설정됨" if session_id else "없음",
+            limit, configured_limit, effective_limit,
         )
 
         if not session_id:
@@ -287,7 +311,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             }
 
         try:
-            contents = self._fetch_ranking(session_id, mode, content, limit)
+            contents = self._fetch_ranking(session_id, mode, content, effective_limit)
         except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
             logger.warning("[pixiv_ranking] 중단: 랭킹 조회 실패: %s", e)
             return {"success": False, "error": f"랭킹 조회 실패: {e}"}

@@ -28,7 +28,7 @@
     // 확인 후 하드코딩된 'general' 부분을 교체해야 합니다.
     const params = new URLSearchParams({
       type: 'general',
-      limit: '30',
+      limit: '50',
       mode: mode,
       content: content,
     });
