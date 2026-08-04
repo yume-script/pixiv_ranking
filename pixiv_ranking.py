@@ -69,7 +69,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         },
         {
             "key": "MODE",
-            "label": "랭킹 모드 (기본값, 화면 상단 드롭다운으로 즉시 변경 가능)",
+            "label": "랭킹 모드",
             "type": "select",
             "default": "daily",
             "options": [
@@ -85,7 +85,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         },
         {
             "key": "CONTENT",
-            "label": "콘텐츠 타입 (기본값, 화면 상단 드롭다운으로 즉시 변경 가능)",
+            "label": "콘텐츠 타입",
             "type": "select",
             "default": "all",
             "options": [
@@ -93,7 +93,6 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
                 {"value": "illust", "label": "일러스트 (illust)"},
                 {"value": "ugoira", "label": "우고이라 (ugoira)"},
                 {"value": "manga", "label": "만화 (manga)"},
-                {"value": "novel", "label": "소설 (novel)"},
             ],
         },
     ]
@@ -148,16 +147,10 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         return headers
 
     def _fetch_ranking(self, session_id, mode, content, limit):
-        if content == "novel":
-            url = (
-                f"https://www.pixiv.net/novel/ranking.php"
-                f"?mode={mode}&content=novel&format=json"
-            )
-        else:
-            url = (
-                f"https://www.pixiv.net/ranking.php"
-                f"?mode={mode}&content={content}&format=json"
-            )
+        url = (
+            f"https://www.pixiv.net/ranking.php"
+            f"?mode={mode}&content={content}&format=json"
+        )
         logger.warning(
             "[pixiv_ranking] 1/3 랭킹 조회 시작: mode=%s, content=%s, limit=%s, url=%s",
             mode, content, limit, url,
@@ -209,22 +202,17 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             )
             return None
 
-    def _build_items(self, contents, session_id, content):
+    def _build_items(self, contents, session_id):
         logger.warning(
             "[pixiv_ranking] 2/3 썸네일 %d개 병렬 수집 시작 (동시 %d개)",
             len(contents), MAX_CONCURRENT_THUMBS,
         )
         t0 = time.time()
         items = [None] * len(contents)
-        is_novel = content == "novel"
 
         def _work(idx, entry):
-            if is_novel:
-                work_id = entry.get("novel_id") or entry.get("id")
-                page_url = f"https://www.pixiv.net/novel/show.php?id={work_id}"
-            else:
-                work_id = entry.get("illust_id") or entry.get("id")
-                page_url = f"https://www.pixiv.net/artworks/{work_id}"
+            work_id = entry.get("illust_id") or entry.get("id")
+            page_url = f"https://www.pixiv.net/artworks/{work_id}"
             thumb_url = entry.get("url")
             image_data_uri = self._fetch_thumb_data_uri(thumb_url, session_id)
             title = entry.get("title")
@@ -244,8 +232,8 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
                 "url": page_url,
                 "link_url": page_url,
                 "rank": rank,
-                # 참고용 원본 이미지 URL 추정치 (png 원본이면 실패할 수 있음, 소설 표지는 대상 아님)
-                "original_url_guess": None if is_novel else _thumb_to_original(thumb_url),
+                # 참고용 원본 이미지 URL 추정치 (png 원본이면 실패할 수 있음)
+                "original_url_guess": _thumb_to_original(thumb_url),
             }
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_THUMBS) as pool:
@@ -308,7 +296,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             logger.warning("[pixiv_ranking] 랭킹 결과 0건, 빈 목록 반환")
             return {"success": True, "items": []}
 
-        items = self._build_items(contents, session_id, content)
+        items = self._build_items(contents, session_id)
         logger.warning(
             "[pixiv_ranking] 3/3 완료: 최종 %d개 항목 반환", len(items),
         )
