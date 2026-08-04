@@ -25,6 +25,23 @@
   font-size: 0.9rem;
 }
 
+.pr-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pr-select {
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  background: transparent;
+  color: inherit;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
 .pr-btn {
   border: 1px solid rgba(128, 128, 128, 0.4);
   background: transparent;

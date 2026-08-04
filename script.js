@@ -5,10 +5,15 @@
   function fetchRankingData() {
     const grid = document.getElementById('pr-grid');
     const status = document.getElementById('pr-status');
+    const contentSelect = document.getElementById('pr-content-select');
+    const modeSelect = document.getElementById('pr-mode-select');
     if (!grid || !status) {
       console.warn(LOG_PREFIX, '컨테이너 엘리먼트(#pr-grid/#pr-status)를 찾지 못함');
       return;
     }
+
+    const content = contentSelect ? contentSelect.value : 'all';
+    const mode = modeSelect ? modeSelect.value : 'daily';
 
     status.textContent = '불러오는 중...';
     status.style.display = 'block';
@@ -16,10 +21,18 @@
 
     // 참고: random_gallery 플러그인과 동일한 엔드포인트 규격을 사용합니다.
     // /api/media/dashboard/widgets/{plugin_id}/data?type={db_type}&limit={limit}
+    // 여기에 상단 드롭다운에서 고른 mode/content를 추가 쿼리 파라미터로 실어보냅니다.
+    // (백엔드가 flask.request.args로 이 값을 읽어 설정값보다 우선 적용함)
     // db_type은 우선 'general'로 고정했습니다. 성인 서재(adult) 등 다른 타입에서도
     // 이 탭을 노출하려면 코어가 현재 db_type을 어떻게 프론트엔드에 넘겨주는지
     // 확인 후 하드코딩된 'general' 부분을 교체해야 합니다.
-    const url = '/api/media/dashboard/widgets/pixiv_ranking/data?type=general&limit=30';
+    const params = new URLSearchParams({
+      type: 'general',
+      limit: '30',
+      mode: mode,
+      content: content,
+    });
+    const url = '/api/media/dashboard/widgets/pixiv_ranking/data?' + params.toString();
 
     console.log(LOG_PREFIX, '1/3 데이터 요청 시작:', url);
     const t0 = performance.now();
@@ -115,6 +128,22 @@
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => {
       console.log(LOG_PREFIX, '새로고침 버튼 클릭');
+      fetchRankingData();
+    });
+  }
+
+  const contentSelectEl = document.getElementById('pr-content-select');
+  if (contentSelectEl) {
+    contentSelectEl.addEventListener('change', () => {
+      console.log(LOG_PREFIX, '콘텐츠 타입 변경:', contentSelectEl.value);
+      fetchRankingData();
+    });
+  }
+
+  const modeSelectEl = document.getElementById('pr-mode-select');
+  if (modeSelectEl) {
+    modeSelectEl.addEventListener('change', () => {
+      console.log(LOG_PREFIX, '랭킹 모드 변경:', modeSelectEl.value);
       fetchRankingData();
     });
   }
