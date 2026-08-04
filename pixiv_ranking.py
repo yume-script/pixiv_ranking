@@ -108,14 +108,14 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "show_sample_update_button": False,
     }
 
-    dashboard_widget = {
-        "title": "Pixiv 랭킹",
-        "subtitle": "픽시브 실시간 랭킹",
-        "provider": "Pixiv",
-        "icon": "fa-solid fa-image",
-        "limit": 10,
-        "supported_types": ["general"],
-    }
+    #dashboard_widget = {
+    #    "title": "Pixiv 랭킹",
+    #    "subtitle": "픽시브 실시간 랭킹",
+    #    "provider": "Pixiv",
+    #    "icon": "fa-solid fa-image",
+    #    "limit": 10,
+    #    "supported_types": ["general"],
+    #}
 
     # 코어 좌측/상단 "카테고리" 내비게이션에 별도 메뉴로 노출되는 풀페이지 탭 계약.
     # (guide_plugins.md에는 없지만 random_gallery 실제 소스로 확인된 계약:
