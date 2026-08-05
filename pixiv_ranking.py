@@ -201,10 +201,11 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
                 content_type = resp.headers.get("Content-Type", "image/jpeg")
             b64 = base64.b64encode(raw).decode("ascii")
             elapsed = time.time() - t0
-            logger.warning(
-                "[pixiv_ranking] 2/3 썸네일 수신 성공: status=%s, %.2fs, %d bytes, %s | %s",
-                status, elapsed, len(raw), content_type, thumb_url,
-            )
+            #로그 숨기기..
+            #logger.warning(
+            #    "[pixiv_ranking] 2/3 썸네일 수신 성공: status=%s, %.2fs, %d bytes, %s | %s",
+            #    status, elapsed, len(raw), content_type, thumb_url,
+            #)
             return f"data:{content_type};base64,{b64}"
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
             elapsed = time.time() - t0
