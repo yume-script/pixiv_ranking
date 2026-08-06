@@ -47,6 +47,7 @@ base64 인라이닝 방식으로 되돌렸습니다.
 import json
 import logging
 import re
+import sys
 import time
 from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor, as_completed
