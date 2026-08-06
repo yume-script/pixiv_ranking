@@ -9,18 +9,12 @@ Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
   (브라우저가 i.pximg.net에 직접 요청하면 Referer 누락으로 403이 나므로
    반드시 서버 사이드에서 중계해야 함)
 
-[중요 — 이전 시도 정정]
-직전 버전에서는 base64 인라이닝 대신 `/plugins/pixiv_ranking/thumb` 같은
-자체 프록시 라우트 URL을 내려주고, 플러그인이 `register_routes(blueprint)`를
-통해 그 라우트를 등록한다고 가정했습니다. 하지만 random_gallery 플러그인의
-실제 소스/README를 확인한 결과, 이 프레임워크는 플러그인의 공개 계약으로
-`get_dashboard_data()` 단 하나만 호출하며 플러그인이 별도 Flask 라우트를
-등록할 수 있는 훅 자체를 제공하지 않습니다. random_gallery도 Referer 문제를
-우회하기 위해 자체 라우트가 아니라 외부 Google Apps Script 웹앱을 이미지
-프록시로 사용합니다. 즉 `register_routes`는 아무도 호출해주지 않는 죽은
-코드였고, 그게 지난 버전에서 이미지가 전혀 뜨지 않았던 원인입니다.
-그래서 이번 버전은 원래의 base64 인라이닝 방식으로 되돌리되, 대신 아래
-"성능 개선 내역"의 캐싱으로 반복 로드 속도를 개선합니다.
+[정정 내역 — 자체 프록시 라우트 시도 롤백]
+한때 base64 대신 `/plugins/pixiv_ranking/thumb` 자체 라우트 URL을 내려주는
+방식을 시도했으나, random_gallery 플러그인의 실제 소스로 확인한 결과 이
+프레임워크는 `get_dashboard_data()` 단 하나만 공개 계약으로 호출하고
+플러그인이 별도 Flask 라우트를 등록할 방법을 제공하지 않습니다. 그래서
+base64 인라이닝 방식으로 되돌렸습니다.
 
 주의:
 - 코어 대시보드 카드 렌더러(공통 데스크 그리드)가 실제로 읽는 필드는
@@ -31,16 +25,23 @@ Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
 
 [성능 개선 내역]
 1. 랭킹 API 응답에 대한 TTL 캐시 추가 (기본 5분)
-   -> 같은 mode/content/limit로 대시보드를 반복 로드해도 픽시브 랭킹
-      API를 매번 다시 호출하지 않음.
 2. 썸네일 base64 데이터 URI 자체를 URL 기준으로 캐시 (기본 30분)
-   -> 같은 작품이 여러 랭킹 새로고침에 걸쳐 다시 나와도 재다운로드/
-      재인코딩하지 않고 캐시에서 즉시 반환. 체감 속도 개선의 핵심.
-3. urllib 대신 requests.Session()으로 커넥션(TCP/TLS) 재사용
-4. 상세 로그를 warning -> debug로 낮춤 (운영 환경에서 I/O 비용 절감,
-   에러성 로그만 warning 유지)
-5. 썸네일 병렬 다운로드는 기존과 동일하게 ThreadPoolExecutor 유지
-   (캐시 미스인 항목만 실제로 네트워크 요청이 발생)
+3. requests.Session()으로 커넥션(TCP/TLS) 재사용
+4. 상세 로그를 warning -> debug로 낮춤 (에러성 로그만 warning 유지)
+5. [신규] 썸네일 다운로드 사이즈 축소
+   픽시브 썸네일 URL은 `/c/{width}x{height}[_quality][_format]/img-master/...`
+   형식으로, 픽시브 서버가 원본을 그 사이즈로 즉석 리사이즈해서 내려준다
+   (kepstin/Fix-pixiv-thumbnails, greasyfork "Improve pixiv thumbnails"
+   등 여러 픽시브 클라이언트 프로젝트에서 확인된, 픽시브가 실제로 서비스에
+   사용 중인 공개된 CDN 파라미터). 랭킹 API가 기본으로 내려주는 원본 썸네일
+   URL의 `/c/WxH.../` 부분을 대시보드 카드에 실제로 필요한 작은 사이즈로
+   치환해서 요청하면:
+     - 픽시브 → 우리 서버 다운로드량 자체가 줄어듬 (네트워크 시간 단축)
+     - base64 인코딩 후 JSON payload 크기도 비례해서 줄어듬 (브라우저
+       전송/렌더링도 더 빨라짐)
+     - 썸네일 캐시가 메모리를 훨씬 덜 씀 (더 많은 항목을 오래 캐시 가능)
+   요청한 사이즈가 어떤 이유로든 실패(404 등)하면 원래 사이즈로 자동
+   폴백한다.
 """
 
 import json
@@ -74,6 +75,12 @@ THUMB_CACHE_TTL = 1800
 # 썸네일 캐시 최대 보관 개수 (메모리 무한 증가 방지, 오래된 것부터 정리)
 THUMB_CACHE_MAX_ITEMS = 500
 
+# 대시보드 카드에 실제로 필요한 썸네일 사이즈. 카드가 보통 150~200px 폭으로
+# 렌더링되므로, 그보다 약간 여유 있는 사이즈 + 낮은 JPEG 품질로 충분함.
+# 형식: "{width}x{height}_{quality 1-100}" (crop 방식은 원본 파일명이
+# _master1200/_square1200 중 무엇이냐에 따라 결정되며 이 값과는 무관함)
+THUMB_TARGET_SIZE = "200x200_75"
+
 # 프로세스 전역에서 커넥션을 재사용하기 위한 공용 세션
 _session = requests.Session()
 _session.headers.update({
@@ -83,8 +90,10 @@ _session.headers.update({
 
 # 랭킹 캐시: {(mode, content, limit): (timestamp, contents)}
 _ranking_cache = {}
-# 썸네일 캐시: {thumb_url: (timestamp, data_uri)}
+# 썸네일 캐시: {thumb_url(원본 기준): (timestamp, data_uri)}
 _thumb_cache = {}
+
+_THUMB_SIZE_RE = re.compile(r"/c/\d+x\d+(?:_[^/]*)?/")
 
 
 def _thumb_to_original(thumb_url):
@@ -98,6 +107,15 @@ def _thumb_to_original(thumb_url):
     original = re.sub(r"/c/\d+x\d+/img-master/", "/img-original/", thumb_url)
     original = original.replace("_master1200", "")
     return original
+
+
+def _shrink_thumb_url(thumb_url, size=THUMB_TARGET_SIZE):
+    """썸네일 URL의 /c/{width}x{height}.../ 부분을 더 작은 사이즈로 치환.
+    해당 세그먼트가 없는 URL(예: img-original)은 그대로 반환."""
+    if not thumb_url:
+        return thumb_url
+    shrunk, count = _THUMB_SIZE_RE.subn(f"/c/{size}/", thumb_url, count=1)
+    return shrunk if count else thumb_url
 
 
 def _thumb_cache_get(thumb_url):
@@ -256,9 +274,21 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         _ranking_cache[cache_key] = (now, trimmed)
         return trimmed
 
+    def _download_thumb_bytes(self, url, session_id):
+        resp = _session.get(
+            url,
+            cookies={"PHPSESSID": session_id} if session_id else None,
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+        return resp.content, content_type
+
     def _fetch_thumb_data_uri(self, thumb_url, session_id):
-        """썸네일을 base64 data URI로 변환. URL 기준 캐시를 먼저 확인하고,
-        캐시 미스일 때만 실제로 픽시브에 요청한다 (로컬 파일 저장은 없음)."""
+        """썸네일을 base64 data URI로 변환. URL(원본 사이즈 기준) 캐시를 먼저
+        확인하고, 캐시 미스일 때만 축소된 사이즈로 픽시브에 요청한다
+        (로컬 파일 저장 없음). 축소 사이즈 요청이 실패하면 원본 사이즈로
+        한 번 더 시도한다."""
         if not thumb_url:
             logger.debug("[pixiv_ranking] 2/3 썸네일 URL 없음, 건너뜀")
             return None
@@ -267,34 +297,42 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         if cached is not None:
             return cached
 
+        small_url = _shrink_thumb_url(thumb_url)
         t0 = time.time()
         try:
-            resp = _session.get(
-                thumb_url,
-                cookies={"PHPSESSID": session_id} if session_id else None,
-                timeout=REQUEST_TIMEOUT,
-            )
-            resp.raise_for_status()
-            content_type = resp.headers.get("Content-Type", "image/jpeg")
-            b64 = b64encode(resp.content).decode("ascii")
-            data_uri = f"data:{content_type};base64,{b64}"
-            _thumb_cache_set(thumb_url, data_uri)
+            raw, content_type = self._download_thumb_bytes(small_url, session_id)
             logger.debug(
-                "[pixiv_ranking] 2/3 썸네일 수신 성공(캐시 미스, %.2fs): %d bytes, %s | %s",
-                time.time() - t0, len(resp.content), content_type, thumb_url,
+                "[pixiv_ranking] 2/3 축소 썸네일 수신 성공(%.2fs): %d bytes, %s | %s",
+                time.time() - t0, len(raw), content_type, small_url,
             )
-            return data_uri
         except requests.RequestException as e:
-            logger.warning(
-                "[pixiv_ranking] 2/3 썸네일 수신 실패(%.2fs): %s | %s",
-                time.time() - t0, e, thumb_url,
+            logger.debug(
+                "[pixiv_ranking] 2/3 축소 썸네일 실패(%.2fs), 원본 사이즈로 재시도: %s | %s",
+                time.time() - t0, e, small_url,
             )
-            return None
+            t1 = time.time()
+            try:
+                raw, content_type = self._download_thumb_bytes(thumb_url, session_id)
+                logger.debug(
+                    "[pixiv_ranking] 2/3 원본 사이즈 폴백 성공(%.2fs): %d bytes, %s | %s",
+                    time.time() - t1, len(raw), content_type, thumb_url,
+                )
+            except requests.RequestException as e2:
+                logger.warning(
+                    "[pixiv_ranking] 2/3 썸네일 수신 완전 실패(축소 %.2fs + 원본 %.2fs): %s | %s",
+                    time.time() - t0, time.time() - t1, e2, thumb_url,
+                )
+                return None
+
+        b64 = b64encode(raw).decode("ascii")
+        data_uri = f"data:{content_type};base64,{b64}"
+        _thumb_cache_set(thumb_url, data_uri)
+        return data_uri
 
     def _build_items(self, contents, session_id):
         logger.debug(
-            "[pixiv_ranking] 2/3 썸네일 %d개 병렬 수집 시작 (동시 %d개, 캐시 히트분은 즉시 반환)",
-            len(contents), MAX_CONCURRENT_THUMBS,
+            "[pixiv_ranking] 2/3 썸네일 %d개 병렬 수집 시작 (동시 %d개, 사이즈=%s, 캐시 히트분은 즉시 반환)",
+            len(contents), MAX_CONCURRENT_THUMBS, THUMB_TARGET_SIZE,
         )
         t0 = time.time()
         items = [None] * len(contents)
