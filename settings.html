@@ -1,11 +1,9 @@
 <div class="pr-settings-panel">
   <div class="pr-settings-title">Pixiv 랭킹 설정</div>
   <div class="pr-settings-desc">Pixiv 랭킹을 대시보드에 표시하기 위한 로그인 세션 및 기본값 설정입니다.</div>
-
   <details class="pr-settings-section">
     <summary>설정 펼치기 (클릭)</summary>
     <div class="pr-settings-body">
-
       <!-- 픽시브 로그인 세션 -->
       <div class="pr-settings-field">
         <label for="pr-phpsessid">Pixiv 로그인 세션</label>
@@ -14,7 +12,6 @@
           <p class="hint">로그인 상태의 브라우저 개발자도구 &gt; Application/저장공간 &gt; 쿠키에서 PHPSESSID 값을 확인해 입력하세요.</p>
         </div>
       </div>
-
       <!-- 랭킹 모드 기본값 -->
       <div class="pr-settings-field">
         <label for="pr-mode">랭킹 모드</label>
@@ -32,7 +29,6 @@
           <p class="hint">기본 랭킹 모드입니다. 풀페이지 탭 화면 상단 드롭다운으로 요청 시점에 덮어쓸 수 있습니다.</p>
         </div>
       </div>
-
       <!-- 콘텐츠 타입 기본값 -->
       <div class="pr-settings-field">
         <label for="pr-content">콘텐츠 타입</label>
@@ -46,7 +42,6 @@
           <p class="hint">기본 콘텐츠 타입입니다. 풀페이지 탭 화면 상단 드롭다운으로 요청 시점에 덮어쓸 수 있습니다.</p>
         </div>
       </div>
-
       <!-- 표시 개수 -->
       <div class="pr-settings-field">
         <label for="pr-limit">표시 개수</label>
@@ -60,7 +55,23 @@
           <p class="hint">대시보드 카드와 풀페이지 탭에 한 번에 보여줄 랭킹 개수입니다. 픽시브가 한 번에 최대 50개까지 제공합니다.</p>
         </div>
       </div>
-
+      <!-- 로그 레벨 -->
+      <div class="pr-settings-field">
+        <label for="pr-log-level">로그 레벨</label>
+        <div class="pr-input-container">
+          <select id="pr-log-level" name="LOG_LEVEL">
+            <option value="WARNING" selected>WARNING (기본, 오류만 기록)</option>
+            <option value="INFO">INFO</option>
+            <option value="DEBUG">DEBUG (단계별 소요시간·요청 상세 기록)</option>
+          </select>
+          <p class="hint">
+            느려지는 지점을 진단할 때만 일시적으로 DEBUG로 바꿔서 확인하세요.
+            DEBUG는 랭킹 API 응답 시간, 썸네일 캐시 히트/미스, 각 다운로드
+            소요시간을 서버 로그에 남기지만 로그량이 많아지므로, 진단이
+            끝나면 다시 WARNING으로 돌려두는 것을 권장합니다.
+          </p>
+        </div>
+      </div>
     </div>
   </details>
 </div>

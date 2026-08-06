@@ -189,6 +189,17 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
                 {"value": "50", "label": "50개 (최대)"},
             ],
         },
+        {
+            "key": "LOG_LEVEL",
+            "label": "로그 레벨",
+            "type": "select",
+            "default": "WARNING",
+            "options": [
+                {"value": "WARNING", "label": "WARNING (기본, 오류만 기록)"},
+                {"value": "INFO", "label": "INFO"},
+                {"value": "DEBUG", "label": "DEBUG (단계별 소요시간·요청 상세 기록)"},
+            ],
+        },
     ]
 
     # 자동 업데이트를 지원하려면 raw_base_url을 실제 호스팅 리포지토리로 바꿔서 사용
@@ -397,6 +408,17 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             db_type, limit,
         )
         cfg = self.get_plugin_config(db_type, default={})
+
+        # 설정 화면(settings.html)의 "로그 레벨" 드롭다운 값을 그대로 반영.
+        # 배포 없이 UI에서 바로 DEBUG로 바꿔 병목 구간(1/3 랭킹 조회,
+        # 2/3 썸네일 다운로드/캐시 히트율)을 진단할 수 있도록 하기 위함.
+        log_level_name = str(cfg.get("LOG_LEVEL", "WARNING")).upper()
+        log_level = getattr(logging, log_level_name, None)
+        if not isinstance(log_level, int):
+            log_level = logging.WARNING
+        if logger.level != log_level:
+            logger.setLevel(log_level)
+
         session_id = cfg.get("PHPSESSID")
         mode = self._get_request_override("mode") or cfg.get("MODE", "daily")
         content = self._get_request_override("content") or cfg.get("CONTENT", "all")
