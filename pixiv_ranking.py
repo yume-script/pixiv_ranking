@@ -4,12 +4,23 @@ Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
 
 - search / apply: 검색형 메타데이터 기능은 사용하지 않음 (대시보드 전용)
 - dashboard_widget + get_dashboard_data: 픽시브 랭킹 TOP N을 카드로 노출
-- 이미지: [개선] base64로 인라이닝하지 않고, /plugins/pixiv_ranking/thumb
-  프록시 라우트의 URL만 내려준다. 브라우저가 <img src="...">로 각 썸네일을
-  병렬 + lazy-load 방식으로 직접 요청하므로, get_dashboard_data 응답 자체는
-  이미지 다운로드를 기다리지 않고 즉시 반환된다.
-  (i.pximg.net은 Referer 헤더가 없으면 403을 반환하므로, 프록시 라우트에서
-   서버 사이드로 Referer를 붙여 중계하는 구조는 그대로 유지한다.)
+- 이미지: 로컬 저장 없이, 요청 시점에 서버가 Referer 헤더를 붙여
+  픽시브에서 직접 받아온 뒤 base64 데이터 URI로 응답에 포함시켜 프록시.
+  (브라우저가 i.pximg.net에 직접 요청하면 Referer 누락으로 403이 나므로
+   반드시 서버 사이드에서 중계해야 함)
+
+[중요 — 이전 시도 정정]
+직전 버전에서는 base64 인라이닝 대신 `/plugins/pixiv_ranking/thumb` 같은
+자체 프록시 라우트 URL을 내려주고, 플러그인이 `register_routes(blueprint)`를
+통해 그 라우트를 등록한다고 가정했습니다. 하지만 random_gallery 플러그인의
+실제 소스/README를 확인한 결과, 이 프레임워크는 플러그인의 공개 계약으로
+`get_dashboard_data()` 단 하나만 호출하며 플러그인이 별도 Flask 라우트를
+등록할 수 있는 훅 자체를 제공하지 않습니다. random_gallery도 Referer 문제를
+우회하기 위해 자체 라우트가 아니라 외부 Google Apps Script 웹앱을 이미지
+프록시로 사용합니다. 즉 `register_routes`는 아무도 호출해주지 않는 죽은
+코드였고, 그게 지난 버전에서 이미지가 전혀 뜨지 않았던 원인입니다.
+그래서 이번 버전은 원래의 base64 인라이닝 방식으로 되돌리되, 대신 아래
+"성능 개선 내역"의 캐싱으로 반복 로드 속도를 개선합니다.
 
 주의:
 - 코어 대시보드 카드 렌더러(공통 데스크 그리드)가 실제로 읽는 필드는
@@ -18,27 +29,28 @@ Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
   다른 렌더러가 다른 키를 참조할 경우를 대비해 image/image_url/url 등의
   별칭 필드도 함께 채워서 반환합니다.
 
-[개선사항 적용 내역]
-1. 이미지 base64 인라이닝 제거 -> 프록시 URL 방식으로 전환 (가장 큰 속도 개선)
-2. 랭킹 API 응답에 대한 TTL 캐시 추가 (기본 5분)
+[성능 개선 내역]
+1. 랭킹 API 응답에 대한 TTL 캐시 추가 (기본 5분)
+   -> 같은 mode/content/limit로 대시보드를 반복 로드해도 픽시브 랭킹
+      API를 매번 다시 호출하지 않음.
+2. 썸네일 base64 데이터 URI 자체를 URL 기준으로 캐시 (기본 30분)
+   -> 같은 작품이 여러 랭킹 새로고침에 걸쳐 다시 나와도 재다운로드/
+      재인코딩하지 않고 캐시에서 즉시 반환. 체감 속도 개선의 핵심.
 3. urllib 대신 requests.Session()으로 커넥션(TCP/TLS) 재사용
-4. 상세 로그를 warning -> debug로 낮춤 (운영 환경에서 I/O 비용 절감)
-
-[통합 시 확인 필요 — 프레임워크 의존적인 부분]
-- 이 플러그인 시스템의 실제 라우트 등록 방식(Blueprint 등록 지점, URL prefix)을
-  모르기 때문에, 아래 `bp` Blueprint는 하나의 예시입니다.
-  random_gallery 같은 다른 플러그인이 이미 Flask 라우트를 어떻게 등록하는지
-  확인한 뒤, 그 방식에 맞춰 `register_routes()` 호출 지점을 연결해야 합니다.
+4. 상세 로그를 warning -> debug로 낮춤 (운영 환경에서 I/O 비용 절감,
+   에러성 로그만 warning 유지)
+5. 썸네일 병렬 다운로드는 기존과 동일하게 ThreadPoolExecutor 유지
+   (캐시 미스인 항목만 실제로 네트워크 요청이 발생)
 """
 
 import json
 import logging
 import re
 import time
-from urllib.parse import quote, unquote
+from base64 import b64encode
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-from concurrent.futures import ThreadPoolExecutor
 
 from plugins.metadata.base import BaseMetadataProvider
 
@@ -50,13 +62,17 @@ USER_AGENT = (
 )
 PIXIV_REFERER = "https://www.pixiv.net/"
 
-# 동시에 받아올 썸네일 최대 개수 (네트워크 부하 제한) - 랭킹 프리페치용
+# 동시에 받아올 썸네일 최대 개수 (네트워크 부하 제한)
 MAX_CONCURRENT_THUMBS = 5
 # 개별 요청 타임아웃(초)
 REQUEST_TIMEOUT = 8
 
 # 랭킹 API 응답 캐시 TTL(초). 랭킹은 자주 바뀌지 않으므로 5분 정도로 설정.
 RANKING_CACHE_TTL = 300
+# 썸네일 base64 캐시 TTL(초). 작품 썸네일 자체는 거의 안 바뀌므로 더 길게.
+THUMB_CACHE_TTL = 1800
+# 썸네일 캐시 최대 보관 개수 (메모리 무한 증가 방지, 오래된 것부터 정리)
+THUMB_CACHE_MAX_ITEMS = 500
 
 # 프로세스 전역에서 커넥션을 재사용하기 위한 공용 세션
 _session = requests.Session()
@@ -67,6 +83,8 @@ _session.headers.update({
 
 # 랭킹 캐시: {(mode, content, limit): (timestamp, contents)}
 _ranking_cache = {}
+# 썸네일 캐시: {thumb_url: (timestamp, data_uri)}
+_thumb_cache = {}
 
 
 def _thumb_to_original(thumb_url):
@@ -80,6 +98,25 @@ def _thumb_to_original(thumb_url):
     original = re.sub(r"/c/\d+x\d+/img-master/", "/img-original/", thumb_url)
     original = original.replace("_master1200", "")
     return original
+
+
+def _thumb_cache_get(thumb_url):
+    entry = _thumb_cache.get(thumb_url)
+    if not entry:
+        return None
+    ts, data_uri = entry
+    if time.time() - ts > THUMB_CACHE_TTL:
+        _thumb_cache.pop(thumb_url, None)
+        return None
+    return data_uri
+
+
+def _thumb_cache_set(thumb_url, data_uri):
+    if len(_thumb_cache) >= THUMB_CACHE_MAX_ITEMS:
+        # 가장 오래된 항목부터 정리 (간단한 방식, 별도 라이브러리 불필요)
+        oldest_key = min(_thumb_cache, key=lambda k: _thumb_cache[k][0])
+        _thumb_cache.pop(oldest_key, None)
+    _thumb_cache[thumb_url] = (time.time(), data_uri)
 
 
 class PixivRankingMetadataProvider(BaseMetadataProvider):
@@ -160,6 +197,10 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
     # (guide_plugins.md에는 없지만 random_gallery 실제 소스로 확인된 계약:
     #  title/icon/order 만 선언하면 되고, 카드 데이터는 get_dashboard_data()를
     #  그대로 재사용함 — 별도 index.html/script.js 불필요)
+    # 주의: 이 값은 코어가 인스턴스가 아닌 "클래스 자체"에서 읽는 것으로 보임
+    # (random_gallery README에서 확인된 회귀 버그 사례). 따라서 반드시 고정된
+    # dict여야 하며, @property 등으로 동적으로 바꾸면 플러그인이 목록에서
+    # 통째로 사라질 수 있음.
     category_tab = {
         "title": "Pixiv 랭킹",
         "icon": "fa-solid fa-image",
@@ -180,7 +221,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         now = time.time()
         if cached and (now - cached[0]) < RANKING_CACHE_TTL:
             logger.debug(
-                "[pixiv_ranking] 1/3 캐시 히트: mode=%s, content=%s, limit=%s (남은 TTL %.0fs)",
+                "[pixiv_ranking] 1/3 랭킹 캐시 히트: mode=%s, content=%s, limit=%s (남은 TTL %.0fs)",
                 mode, content, limit, RANKING_CACHE_TTL - (now - cached[0]),
             )
             return cached[1]
@@ -215,6 +256,91 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         _ranking_cache[cache_key] = (now, trimmed)
         return trimmed
 
+    def _fetch_thumb_data_uri(self, thumb_url, session_id):
+        """썸네일을 base64 data URI로 변환. URL 기준 캐시를 먼저 확인하고,
+        캐시 미스일 때만 실제로 픽시브에 요청한다 (로컬 파일 저장은 없음)."""
+        if not thumb_url:
+            logger.debug("[pixiv_ranking] 2/3 썸네일 URL 없음, 건너뜀")
+            return None
+
+        cached = _thumb_cache_get(thumb_url)
+        if cached is not None:
+            return cached
+
+        t0 = time.time()
+        try:
+            resp = _session.get(
+                thumb_url,
+                cookies={"PHPSESSID": session_id} if session_id else None,
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            content_type = resp.headers.get("Content-Type", "image/jpeg")
+            b64 = b64encode(resp.content).decode("ascii")
+            data_uri = f"data:{content_type};base64,{b64}"
+            _thumb_cache_set(thumb_url, data_uri)
+            logger.debug(
+                "[pixiv_ranking] 2/3 썸네일 수신 성공(캐시 미스, %.2fs): %d bytes, %s | %s",
+                time.time() - t0, len(resp.content), content_type, thumb_url,
+            )
+            return data_uri
+        except requests.RequestException as e:
+            logger.warning(
+                "[pixiv_ranking] 2/3 썸네일 수신 실패(%.2fs): %s | %s",
+                time.time() - t0, e, thumb_url,
+            )
+            return None
+
+    def _build_items(self, contents, session_id):
+        logger.debug(
+            "[pixiv_ranking] 2/3 썸네일 %d개 병렬 수집 시작 (동시 %d개, 캐시 히트분은 즉시 반환)",
+            len(contents), MAX_CONCURRENT_THUMBS,
+        )
+        t0 = time.time()
+        items = [None] * len(contents)
+
+        def _work(idx, entry):
+            work_id = entry.get("illust_id") or entry.get("id")
+            page_url = f"https://www.pixiv.net/artworks/{work_id}"
+            thumb_url = entry.get("url")
+            image_data_uri = self._fetch_thumb_data_uri(thumb_url, session_id)
+            title = entry.get("title")
+            rank = entry.get("rank")
+            display_title = f"#{rank} {title}" if rank else title
+            # 코어 대시보드 카드 렌더러가 실제로 읽는 필드: cover/title/author/publisher/link
+            # (random_gallery 플러그인 소스로 확인됨)
+            return idx, {
+                "cover": image_data_uri,
+                "title": display_title,
+                "author": entry.get("user_name"),
+                "publisher": "Pixiv",
+                "link": page_url,
+                # 다른 렌더러 대응용 별칭 (혹시 다른 키를 참조하는 경우 대비)
+                "image": image_data_uri,
+                "image_url": image_data_uri,
+                "url": page_url,
+                "link_url": page_url,
+                "rank": rank,
+                # 참고용 원본 이미지 URL 추정치 (png 원본이면 실패할 수 있음)
+                "original_url_guess": _thumb_to_original(thumb_url),
+            }
+
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_THUMBS) as pool:
+            futures = [
+                pool.submit(_work, idx, entry) for idx, entry in enumerate(contents)
+            ]
+            for fut in as_completed(futures):
+                idx, item = fut.result()
+                items[idx] = item
+
+        elapsed = time.time() - t0
+        success_count = sum(1 for it in items if it.get("cover"))
+        logger.debug(
+            "[pixiv_ranking] 2/3 썸네일 수집 완료: %.2fs, 성공 %d/%d개",
+            elapsed, success_count, len(items),
+        )
+        return items
+
     def _get_request_override(self, key):
         """Flask 요청 컨텍스트에서 쿼리 파라미터를 읽음 (프론트엔드 드롭다운 값).
         요청 컨텍스트 밖에서 호출되면(예: 배치 작업) 조용히 None을 반환하고
@@ -225,45 +351,6 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             return val if val else None
         except Exception:
             return None
-
-    def _build_items(self, contents, session_id):
-        """
-        [개선] 더 이상 서버에서 썸네일을 다운로드해 base64로 인라이닝하지 않는다.
-        대신 프록시 라우트(/plugins/pixiv_ranking/thumb?url=...)의 URL만 채워서
-        반환한다 -> get_dashboard_data가 이미지 다운로드를 기다리지 않고 즉시
-        응답하며, 실제 이미지 로딩은 브라우저가 <img> 태그로 병렬/lazy 처리한다.
-        """
-        items = []
-        for entry in contents:
-            work_id = entry.get("illust_id") or entry.get("id")
-            page_url = f"https://www.pixiv.net/artworks/{work_id}"
-            thumb_url = entry.get("url")
-            proxy_url = (
-                f"/plugins/pixiv_ranking/thumb?url={quote(thumb_url, safe='')}"
-                if thumb_url else None
-            )
-            title = entry.get("title")
-            rank = entry.get("rank")
-            display_title = f"#{rank} {title}" if rank else title
-            # 코어 대시보드 카드 렌더러가 실제로 읽는 필드: cover/title/author/publisher/link
-            # (random_gallery 플러그인 소스로 확인됨)
-            items.append({
-                "cover": proxy_url,
-                "title": display_title,
-                "author": entry.get("user_name"),
-                "publisher": "Pixiv",
-                "link": page_url,
-                # 다른 렌더러 대응용 별칭 (혹시 다른 키를 참조하는 경우 대비)
-                "image": proxy_url,
-                "image_url": proxy_url,
-                "url": page_url,
-                "link_url": page_url,
-                "rank": rank,
-                # 참고용 원본 이미지 URL 추정치 (png 원본이면 실패할 수 있음)
-                "original_url_guess": _thumb_to_original(thumb_url),
-            })
-        logger.debug("[pixiv_ranking] 2/3 아이템 %d개 구성 완료 (이미지는 프록시 URL만 채움)", len(items))
-        return items
 
     # ---- 대시보드 계약 ----
     def get_dashboard_data(self, db_type, limit=10):
@@ -310,65 +397,8 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             logger.warning("[pixiv_ranking] 랭킹 결과 0건, 빈 목록 반환")
             return {"success": True, "items": []}
 
-        # [개선] 더 이상 여기서 썸네일을 미리 받지 않으므로 즉시 반환된다.
         items = self._build_items(contents, session_id)
         logger.debug(
-            "[pixiv_ranking] 3/3 완료: 최종 %d개 항목 반환 (이미지는 프록시가 지연 처리)", len(items),
+            "[pixiv_ranking] 3/3 완료: 최종 %d개 항목 반환", len(items),
         )
         return {"success": True, "items": items}
-
-    # ---- [신규] 이미지 프록시 라우트 ----
-    def register_routes(self, blueprint):
-        """
-        플러그인 프레임워크가 라우트 등록을 지원하는 경우 이 메서드를 호출해
-        blueprint(Flask Blueprint 등)에 프록시 엔드포인트를 추가한다.
-
-        !! 통합 주의 !!
-        이 플러그인 시스템에서 실제로 라우트를 등록하는 방식(메서드명, 호출
-        시점, Blueprint 인스턴스 전달 여부)을 확인하지 못했습니다. 아래는
-        Flask 기준 예시 구현이며, 프레임워크가 다른 방식(예: 별도
-        routes.py, app.add_url_rule 직접 호출 등)을 요구한다면 그에 맞게
-        연결부만 수정하면 됩니다. 핵심 로직(_proxy_thumb)은 그대로 재사용
-        가능합니다.
-        """
-        blueprint.add_url_rule(
-            "/plugins/pixiv_ranking/thumb",
-            "pixiv_ranking_thumb",
-            self._proxy_thumb,
-            methods=["GET"],
-        )
-
-    def _proxy_thumb(self):
-        from flask import request, Response, abort
-
-        thumb_url = request.args.get("url")
-        if not thumb_url:
-            abort(400, "url 파라미터가 필요합니다.")
-        thumb_url = unquote(thumb_url)
-
-        # 픽시브 도메인만 허용 (오픈 프록시로 악용되는 것을 방지)
-        if not re.match(r"^https://i\.pximg\.net/", thumb_url):
-            abort(400, "허용되지 않은 이미지 호스트입니다.")
-
-        t0 = time.time()
-        try:
-            resp = _session.get(thumb_url, timeout=REQUEST_TIMEOUT, stream=True)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            logger.debug(
-                "[pixiv_ranking] 썸네일 프록시 실패(%.2fs): %s | %s",
-                time.time() - t0, e, thumb_url,
-            )
-            abort(502, "이미지를 가져오지 못했습니다.")
-
-        content_type = resp.headers.get("Content-Type", "image/jpeg")
-        logger.debug(
-            "[pixiv_ranking] 썸네일 프록시 성공(%.2fs): %s | %s",
-            time.time() - t0, content_type, thumb_url,
-        )
-        # 브라우저/CDN 캐시를 활용해 재요청 부담을 줄인다.
-        return Response(
-            resp.content,
-            mimetype=content_type,
-            headers={"Cache-Control": "public, max-age=3600"},
-        )
