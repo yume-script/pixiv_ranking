@@ -42,7 +42,6 @@ base64 인코딩 후 JSON payload 크기도 비례해서 줄어듬 (브라우저
 import json
 import logging
 import re
-import sys
 import time
 from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor, as_completed
