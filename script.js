@@ -3,24 +3,35 @@ async function fetchRanking() {
     const mode = document.getElementById('mode-select').value;
     const content = document.getElementById('content-select').value;
     const grid = document.getElementById('pixiv-grid');
-    
+
     grid.innerHTML = "데이터 불러오는 중...";
     console.log(`[UI] 조회 시작: ${mode} / ${content}`);
-    
+
     try {
         // 서버의 실제 API 엔드포인트 경로를 확인하여 수정하세요
-        // const response = await fetch(`/plugin/metadata/pixiv_ranking/pixiv_get.py?mode=${mode}&content=${content}`);
         const response = await fetch(`pixiv_get.py?mode=${mode}&content=${content}`);
         if (!response.ok) throw new Error('서버 응답 오류: ' + response.status);
-        
+
         const data = await response.json();
         grid.innerHTML = "";
-        
+
+        if (data.length === 0) {
+            grid.innerHTML = "데이터가 없습니다. 플러그인 설정에서 PHPSESSID가 유효한지 확인하세요.";
+            return;
+        }
+
         data.forEach(item => {
-            // 이미지 주소 처리 (필요시 프록시 엔드포인트 적용)
+            // 서버에서 이미 base64로 프리페치해 온 썸네일을 바로 사용
+            // (item.image_data가 없으면 해당 이미지는 다운로드 실패한 것이므로 건너뜀)
+            if (!item.image_data) return;
+
             grid.innerHTML += `
                 <div class="pixiv-item">
-                    <img src="${item.url}" loading="lazy" onerror="this.style.display='none'">
+                    <a href="${item.page_url}" target="_blank">
+                        <img src="${item.image_data}"
+                             data-original="${item.original_url}"
+                             onerror="this.style.display='none'">
+                    </a>
                     <p>${item.title}</p>
                 </div>
             `;
