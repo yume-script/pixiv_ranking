@@ -71,6 +71,7 @@ class PixivRankingPlugin(BaseMetadataProvider):
             return image_url, None
 
     def pixiv_get(self):
+        print("[Pixiv][DEBUG] pixiv_get 호출됨", flush=True)
         db_type = request.args.get('db_type', 'general')
         mode = request.args.get('mode', 'daily')
         content = request.args.get('content', 'all')
