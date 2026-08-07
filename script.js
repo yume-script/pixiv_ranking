@@ -42,14 +42,25 @@ async function fetchRanking() {
     }
 }
 
-// 이벤트 리스너 등록
-document.getElementById('load-btn').addEventListener('click', fetchRanking);
+// [중요] BookOasis는 SPA 방식으로 탭 전환 시 index.html/script.js를
+// 이미 로드된 페이지 DOM에 나중에 동적으로 주입합니다.
+// 이 시점엔 브라우저의 DOMContentLoaded 이벤트가 이미 지나간 뒤이므로
+// window.addEventListener('DOMContentLoaded', ...) 는 절대 실행되지 않습니다.
+// 대신 script.js가 실행되는 시점엔 자신의 index.html 요소들이
+// 이미 DOM에 삽입되어 있으므로, 즉시 초기화를 실행합니다.
+(function initPixivRankingView() {
+    const loadBtn = document.getElementById('load-btn');
+    if (!loadBtn) {
+        console.error("[Pixiv][DEBUG] load-btn 요소를 찾을 수 없습니다. index.html 구조를 확인하세요.");
+        return;
+    }
 
-// [중요] 페이지 로드 완료 시 일일/종합 랭킹 자동 실행
-window.addEventListener('DOMContentLoaded', () => {
-    console.log("[UI] 페이지 로드 완료, 초기 데이터 조회 시작");
+    // 이벤트 리스너 등록
+    loadBtn.addEventListener('click', fetchRanking);
+
+    console.log("[UI] 플러그인 뷰 초기화 완료, 초기 데이터 조회 시작");
     // 초기값 세팅 (일일/종합)
     document.getElementById('mode-select').value = 'daily';
     document.getElementById('content-select').value = 'all';
     fetchRanking();
-});
+})();
