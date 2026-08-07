@@ -134,3 +134,13 @@
         max-width: 100%;
     }
 }
+.pr-skel-card {
+  background: #e0e0e0;
+  border-radius: 8px;
+  aspect-ratio: 3 / 4;
+  animation: pr-shimmer 1.2s ease-in-out infinite alternate;
+}
+@keyframes pr-shimmer {
+  from { background-color: #e0e0e0; }
+  to   { background-color: #cfcfcf; }
+}
