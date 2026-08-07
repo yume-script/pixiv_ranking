@@ -1,5 +1,5 @@
--- coding: utf-8 --
-"""
+#-- coding: utf-8 --
+""
 Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
 search / apply: 검색형 메타데이터 기능은 사용하지 않음 (대시보드 전용)
 dashboard_widget + get_dashboard_data: 픽시브 랭킹 TOP N을 카드로 노출
