@@ -11,6 +11,22 @@
       console.warn(LOG_PREFIX, '컨테이너 엘리먼트(#pr-grid/#pr-status)를 찾지 못함');
       return;
     }
+  function renderSkeletons(count = 10) {
+    const grid = document.getElementById('pr-grid');
+    grid.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const el = document.createElement('div');
+      el.className = 'pr-skel-card';
+      grid.appendChild(el);
+    }
+  }
+
+  // 새로고침 시
+  renderSkeletons();
+  fetch(dashboardDataUrl)
+    .then(res => res.json())
+    .then(data => renderRealCards(data.items)); // 성공 시 진짜 카드로 교체
+  
 
     const content = contentSelect ? contentSelect.value : 'all';
     const mode = modeSelect ? modeSelect.value : 'daily';
