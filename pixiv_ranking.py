@@ -124,13 +124,13 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
 
     # 자동 업데이트를 지원하려면 raw_base_url을 실제 호스팅 리포지토리로 바꿔서 사용
     update_manifest = {
-        "enabled": False,
+        "enabled": True,
         "provider": "github-raw",
-        "raw_base_url": "https://raw.githubusercontent.com/<org>/<repo>/<branch>/plugins/metadata/pixiv_ranking",
-        "files": ["pixiv_ranking.py", "__init__.py", "VERSION"],
+        "raw_base_url": "https://raw.githubusercontent.com/yume-script/pixiv_ranking/refs/heads/main/",
+        "files": ["pixiv_ranking.py", "settings.html","settings.css", "requirements.txt", "style.css", "__init__.py", "VERSION"],
         "version_file": "VERSION",
         "version_key": "plugin version",
-        "show_sample_update_button": False,
+        "show_sample_update_button": True,
     }
     # 대쉬보드에 보여주고 싶을때..
     #dashboard_widget = {
