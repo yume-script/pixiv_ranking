@@ -1,10 +1,16 @@
 // 랭킹 조회 로직을 별도 함수로 분리
 async function fetchRanking() {
-    const mode = document.getElementById('mode-select').value;
-    const content = document.getElementById('content-select').value;
-    const grid = document.getElementById('pixiv-grid');
+    const modeSelect = document.getElementById('pr-mode-select');
+    const contentSelect = document.getElementById('pr-content-select');
+    const grid = document.getElementById('pr-grid');
+    const status = document.getElementById('pr-status');
 
-    grid.innerHTML = "데이터 불러오는 중...";
+    const mode = modeSelect.value;
+    const content = contentSelect.value;
+
+    if (status) status.textContent = "불러오는 중...";
+    if (status) status.style.display = "";
+    grid.innerHTML = "";
     console.log(`[UI] 조회 시작: ${mode} / ${content}`);
 
     try {
@@ -13,17 +19,18 @@ async function fetchRanking() {
         if (!response.ok) throw new Error('서버 응답 오류: ' + response.status);
 
         const data = await response.json();
-        grid.innerHTML = "";
 
-        if (data.length === 0) {
-            grid.innerHTML = "데이터가 없습니다. 플러그인 설정에서 PHPSESSID가 유효한지 확인하세요.";
+        if (!data || data.length === 0) {
+            if (status) status.textContent = "데이터가 없습니다. 플러그인 설정에서 PHPSESSID가 유효한지 확인하세요.";
             return;
         }
 
+        let renderedCount = 0;
         data.forEach(item => {
             // 서버에서 이미 base64로 프리페치해 온 썸네일을 바로 사용
             // (item.image_data가 없으면 해당 이미지는 다운로드 실패한 것이므로 건너뜀)
             if (!item.image_data) return;
+            renderedCount++;
 
             grid.innerHTML += `
                 <div class="pixiv-item">
@@ -36,9 +43,20 @@ async function fetchRanking() {
                 </div>
             `;
         });
+
+        if (status) {
+            if (renderedCount === 0) {
+                status.textContent = "이미지를 하나도 가져오지 못했습니다. 서버 로그를 확인하세요.";
+            } else {
+                status.style.display = "none";
+            }
+        }
     } catch (e) {
         console.error(e);
-        grid.innerHTML = "데이터 로드 실패. API 경로를 확인하세요.";
+        if (status) {
+            status.textContent = "데이터 로드 실패. API 경로를 확인하세요.";
+            status.style.display = "";
+        }
     }
 }
 
@@ -49,18 +67,23 @@ async function fetchRanking() {
 // 대신 script.js가 실행되는 시점엔 자신의 index.html 요소들이
 // 이미 DOM에 삽입되어 있으므로, 즉시 초기화를 실행합니다.
 (function initPixivRankingView() {
-    const loadBtn = document.getElementById('load-btn');
-    if (!loadBtn) {
-        console.error("[Pixiv][DEBUG] load-btn 요소를 찾을 수 없습니다. index.html 구조를 확인하세요.");
+    const refreshBtn = document.getElementById('pr-refresh-btn');
+    const modeSelect = document.getElementById('pr-mode-select');
+    const contentSelect = document.getElementById('pr-content-select');
+
+    if (!refreshBtn || !modeSelect || !contentSelect) {
+        console.error("[Pixiv][DEBUG] 필수 요소를 찾을 수 없습니다 (pr-refresh-btn / pr-mode-select / pr-content-select). index.html 구조를 확인하세요.");
         return;
     }
 
-    // 이벤트 리스너 등록
-    loadBtn.addEventListener('click', fetchRanking);
+    // 새로고침 버튼 + 셀렉트 변경 시에도 바로 재조회
+    refreshBtn.addEventListener('click', fetchRanking);
+    modeSelect.addEventListener('change', fetchRanking);
+    contentSelect.addEventListener('change', fetchRanking);
 
     console.log("[UI] 플러그인 뷰 초기화 완료, 초기 데이터 조회 시작");
-    // 초기값 세팅 (일일/종합)
-    document.getElementById('mode-select').value = 'daily';
-    document.getElementById('content-select').value = 'all';
+    // 초기값 세팅 (일간 / 종합)
+    modeSelect.value = 'daily';
+    contentSelect.value = 'all';
     fetchRanking();
 })();
