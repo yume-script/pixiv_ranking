@@ -150,6 +150,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "title": "Pixiv 랭킹",
         "icon": "fa-solid fa-image",
         "order": 92,
+        "sessions": ["adult"],
     }
 
     # ---- 필수 계약 (대시보드 전용이라 실질 동작 없음) ----
