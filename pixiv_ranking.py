@@ -8,6 +8,10 @@ Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
   픽시브에서 직접 받아온 뒤 base64 데이터 URI로 응답에 포함시켜 프록시.
   (브라우저가 i.pximg.net에 직접 요청하면 Referer 누락으로 403이 나므로
    반드시 서버 사이드에서 중계해야 함)
+- SJVA 회원인증: get_dashboard_data() 진입 시점에 sjva.me 회원인증 API
+  (https://sjva.me/sjva/auth.php)를 호출해 인증되지 않은 경우 플러그인
+  자체를 비활성화(항상 success=False 반환)함. 인증 결과는 매 요청마다
+  인증 서버를 호출하지 않도록 SJVA_AUTH_CACHE_SECONDS 동안 캐시함.
 
 주의:
 - 코어 대시보드 카드 렌더러(공통 데스크 그리드)가 실제로 읽는 필드는
@@ -24,6 +28,7 @@ import logging
 import re
 import time
 import urllib.request
+import urllib.parse
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -41,6 +46,11 @@ PIXIV_REFERER = "https://www.pixiv.net/"
 MAX_CONCURRENT_THUMBS = 5
 # 개별 요청 타임아웃(초)
 REQUEST_TIMEOUT = 8
+
+# SJVA 회원 인증 API (sjva.me 연동 API 문서 기준)
+SJVA_AUTH_URL = "https://sjva.me/sjva/auth.php"
+# 인증 결과 캐시 시간(초). 요청마다 인증 서버를 호출하지 않기 위함.
+SJVA_AUTH_CACHE_SECONDS = 600
 
 
 def _thumb_to_original(thumb_url):
@@ -61,7 +71,26 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
     name = "Pixiv 랭킹"
     is_searchable = False
 
+    # SJVA 인증 결과 캐시. {"apikey:user_id": {"ok": bool, "message": str, "ts": float}}
+    # 인스턴스가 아니라 클래스 속성으로 둬서 요청 간에 공유되게 함.
+    _sjva_auth_cache = {}
+
     config_schema = [
+        # ---- SJVA 회원인증 (필수) ----
+        # 인증에 실패하면 get_dashboard_data()가 항상 실패를 반환해
+        # 이 플러그인이 사실상 비활성화됨.
+        {
+            "key": "SJVA_APIKEY",
+            "label": "SJVA 회원인증 API Key",
+            "type": "password",
+            "required": True,
+        },
+        {
+            "key": "SJVA_USER_ID",
+            "label": "SJVA 홈페이지 ID",
+            "type": "text",
+            "required": True,
+        },
         {
             "key": "PHPSESSID",
             "label": "Pixiv 로그인 세션 (PHPSESSID)",
@@ -127,20 +156,21 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "enabled": True,
         "provider": "github-raw",
         "raw_base_url": "https://raw.githubusercontent.com/yume-script/pixiv_ranking/refs/heads/main/",
-        "files": ["pixiv_ranking.py", "settings.html","settings.css", "requirements.txt", "style.css", "__init__.py", "VERSION"],
+        "files": ["pixiv_ranking.py", "settings.html", "settings.css", "requirements.txt", "style.css", "__init__.py", "VERSION"],
         "version_file": "VERSION",
         "version_key": "plugin version",
         "show_sample_update_button": True,
     }
+
     # 대쉬보드에 보여주고 싶을때..
-    #dashboard_widget = {
-    #    "title": "Pixiv 랭킹",
-    #    "subtitle": "픽시브 실시간 랭킹",
-    #    "provider": "Pixiv",
-    #    "icon": "fa-solid fa-image",
-    #    "limit": 10,
-    #    "supported_types": ["general"],
-    #}
+    # dashboard_widget = {
+    #     "title": "Pixiv 랭킹",
+    #     "subtitle": "픽시브 실시간 랭킹",
+    #     "provider": "Pixiv",
+    #     "icon": "fa-solid fa-image",
+    #     "limit": 10,
+    #     "supported_types": ["general"],
+    # }
 
     # 코어 좌측/상단 "카테고리" 내비게이션에 별도 메뉴로 노출되는 풀페이지 탭 계약.
     # (guide_plugins.md에는 없지만 random_gallery 실제 소스로 확인된 계약:
@@ -159,6 +189,73 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
 
     def apply(self, db_type, book_id, item_data):
         return False, "대시보드 전용 플러그인입니다."
+
+    # ---- SJVA 회원인증 ----
+    def _check_sjva_auth(self, apikey, user_id):
+        """SJVA 회원인증 API 결과를 캐시와 함께 반환. (ok: bool, message: str)"""
+        cache_key = f"{apikey}:{user_id}"
+        now = time.time()
+        cached = self._sjva_auth_cache.get(cache_key)
+        if cached and (now - cached["ts"] < SJVA_AUTH_CACHE_SECONDS):
+            return cached["ok"], cached["message"]
+
+        ok, message = self._request_sjva_auth(apikey, user_id)
+        self._sjva_auth_cache[cache_key] = {"ok": ok, "message": message, "ts": now}
+        return ok, message
+
+    def _request_sjva_auth(self, apikey, user_id):
+        """https://sjva.me/sjva/auth.php POST 호출 (SJVA 회원 인증 API).
+
+        요청 파라미터: apikey, user_id (sjva_id는 생략 - 인증 확인 용도로만 사용)
+        응답 result: success / wrong_id / wrong_apikey
+        """
+        payload = urllib.parse.urlencode(
+            {"apikey": apikey, "user_id": user_id}
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            SJVA_AUTH_URL,
+            data=payload,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method="POST",
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+            elapsed = time.time() - t0
+            logger.warning(
+                "[pixiv_ranking] SJVA 인증 요청 실패(%.2fs): %s", elapsed, e,
+            )
+            return False, f"SJVA 인증 서버 요청 실패: {e}"
+
+        elapsed = time.time() - t0
+        result = (data.get("result") or "").lower()
+
+        if result == "success":
+            logger.warning(
+                "[pixiv_ranking] SJVA 인증 성공(%.2fs): point=%s, level=%s, count=%s",
+                elapsed, data.get("point"), data.get("level"), data.get("count"),
+            )
+            return True, "인증 성공"
+
+        if result == "wrong_id":
+            logger.warning("[pixiv_ranking] SJVA 인증 실패(%.2fs): 존재하지 않는 ID", elapsed)
+            return False, "SJVA 홈페이지 ID를 찾을 수 없습니다."
+
+        if result == "wrong_apikey":
+            logger.warning("[pixiv_ranking] SJVA 인증 실패(%.2fs): apikey 불일치", elapsed)
+            return False, "SJVA API Key가 일치하지 않습니다."
+
+        logger.warning(
+            "[pixiv_ranking] SJVA 인증 실패(%.2fs): 알 수 없는 result=%s, body=%s",
+            elapsed, result, str(data)[:200],
+        )
+        return False, f"SJVA 인증 실패 (result={result or '알 수 없음'})"
 
     # ---- 내부 헬퍼 ----
     def _get_headers(self, session_id, extra=None):
@@ -252,6 +349,7 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             title = entry.get("title")
             rank = entry.get("rank")
             display_title = f"#{rank} {title}" if rank else title
+
             # 코어 대시보드 카드 렌더러가 실제로 읽는 필드: cover/title/author/publisher/link
             # (random_gallery 플러그인 소스로 확인됨)
             return idx, {
@@ -304,6 +402,32 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             db_type, limit,
         )
         cfg = self.get_plugin_config(db_type, default={})
+
+        # ---- SJVA 회원인증 확인 (미인증 시 플러그인 자체 비활성화) ----
+        sjva_apikey = cfg.get("SJVA_APIKEY")
+        sjva_user_id = cfg.get("SJVA_USER_ID")
+        if not sjva_apikey or not sjva_user_id:
+            logger.warning(
+                "[pixiv_ranking] 중단: SJVA 회원인증 정보 미설정 (apikey=%s, user_id=%s) -> 플러그인 비활성화",
+                "설정됨" if sjva_apikey else "없음",
+                "설정됨" if sjva_user_id else "없음",
+            )
+            return {
+                "success": False,
+                "error": "SJVA 회원인증 정보(API Key/홈페이지 ID)가 설정되지 않아 플러그인이 비활성화되어 있습니다.",
+            }
+
+        auth_ok, auth_message = self._check_sjva_auth(sjva_apikey, sjva_user_id)
+        if not auth_ok:
+            logger.warning(
+                "[pixiv_ranking] 중단: SJVA 회원인증 실패(%s) -> 플러그인 비활성화",
+                auth_message,
+            )
+            return {
+                "success": False,
+                "error": f"SJVA 회원인증에 실패하여 플러그인이 비활성화되어 있습니다. ({auth_message})",
+            }
+
         session_id = cfg.get("PHPSESSID")
         mode = self._get_request_override("mode") or cfg.get("MODE", "daily")
         content = self._get_request_override("content") or cfg.get("CONTENT", "all")

@@ -1,9 +1,37 @@
 <div class="pr-settings-panel">
   <div class="pr-settings-title">Pixiv 랭킹 설정</div>
   <div class="pr-settings-desc">Pixiv 랭킹을 대시보드에 표시하기 위한 로그인 세션 및 기본값 설정입니다.</div>
+
+  <!-- SJVA 회원인증 (필수) - 항상 펼쳐진 상태로 노출. 인증에 실패하면 플러그인 전체가 비활성화됨 -->
+  <div class="pr-settings-section">
+    <div class="pr-settings-desc"><strong>SJVA 회원인증 (필수)</strong> — 인증에 실패하면 이 플러그인 전체가 비활성화됩니다.</div>
+    <div class="pr-settings-body">
+
+      <!-- SJVA API Key -->
+      <div class="pr-settings-field">
+        <label for="pr-sjva-apikey">SJVA API Key</label>
+        <div class="pr-input-container">
+          <input id="pr-sjva-apikey" type="password" name="SJVA_APIKEY" placeholder="홈페이지에 등록된 apikey" />
+          <p class="hint">sjva.me 홈페이지에 등록된 apikey입니다.</p>
+        </div>
+      </div>
+
+      <!-- SJVA 홈페이지 ID -->
+      <div class="pr-settings-field">
+        <label for="pr-sjva-user-id">SJVA 홈페이지 ID</label>
+        <div class="pr-input-container">
+          <input id="pr-sjva-user-id" type="text" name="SJVA_USER_ID" placeholder="홈페이지 로그인 ID" />
+          <p class="hint">sjva.me 홈페이지 로그인 ID입니다.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
   <details class="pr-settings-section">
     <summary>설정 펼치기 (클릭)</summary>
     <div class="pr-settings-body">
+
       <!-- 픽시브 로그인 세션 -->
       <div class="pr-settings-field">
         <label for="pr-phpsessid">Pixiv 로그인 세션</label>
@@ -12,6 +40,7 @@
           <p class="hint">로그인 상태의 브라우저 개발자도구 &gt; Application/저장공간 &gt; 쿠키에서 PHPSESSID 값을 확인해 입력하세요.</p>
         </div>
       </div>
+
       <!-- 랭킹 모드 기본값 -->
       <div class="pr-settings-field">
         <label for="pr-mode">랭킹 모드</label>
@@ -29,6 +58,7 @@
           <p class="hint">기본 랭킹 모드입니다. 풀페이지 탭 화면 상단 드롭다운으로 요청 시점에 덮어쓸 수 있습니다.</p>
         </div>
       </div>
+
       <!-- 콘텐츠 타입 기본값 -->
       <div class="pr-settings-field">
         <label for="pr-content">콘텐츠 타입</label>
@@ -42,6 +72,7 @@
           <p class="hint">기본 콘텐츠 타입입니다. 풀페이지 탭 화면 상단 드롭다운으로 요청 시점에 덮어쓸 수 있습니다.</p>
         </div>
       </div>
+
       <!-- 표시 개수 -->
       <div class="pr-settings-field">
         <label for="pr-limit">표시 개수</label>
@@ -55,6 +86,7 @@
           <p class="hint">대시보드 카드와 풀페이지 탭에 한 번에 보여줄 랭킹 개수입니다. 픽시브가 한 번에 최대 50개까지 제공합니다.</p>
         </div>
       </div>
+
       <!-- 썸네일 크기 -->
       <div class="pr-settings-field">
         <label for="pr-thumb-size">썸네일 크기</label>
@@ -68,6 +100,7 @@
           <p class="hint">카드에 표시할 썸네일 이미지 크기입니다. 작을수록 로딩 속도가 빨라집니다.</p>
         </div>
       </div>
+
     </div>
   </details>
 </div>
