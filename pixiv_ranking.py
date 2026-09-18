@@ -12,6 +12,13 @@ Pixiv 랭킹 대시보드 위젯 플러그인 (BookOasis metadata plugin)
   (https://sjva.me/sjva/auth.php)를 호출해 인증되지 않은 경우 플러그인
   자체를 비활성화(항상 success=False 반환)함. 인증 결과는 매 요청마다
   인증 서버를 호출하지 않도록 SJVA_AUTH_CACHE_SECONDS 동안 캐시함.
+- category_tab: 좌측 카테고리 메뉴의 풀페이지 탭 (기존 그대로 유지, 여러 장의
+  그리드를 보여줌).
+- home_widget: 실제 사용자 홈 대시보드에 노출되는 위젯 (사용자가 "홈 화면
+  플러그인 배치 모드"를 켜고 "+ 위젯 추가"로 직접 추가해야 노출됨). 여기서는
+  그리드가 아니라 후보 풀 중에서 무작위로 고른 이미지 1장만 보여준다.
+  get_dashboard_data(db_type, limit=1)로 호출되면(=home_widget.limit이 1이므로)
+  무작위 1장 모드로 동작한다.
 
 주의:
 - 코어 대시보드 카드 렌더러(공통 데스크 그리드)가 실제로 읽는 필드는
@@ -25,6 +32,7 @@ import sys
 import base64
 import json
 import logging
+import random
 import re
 import time
 import urllib.request
@@ -156,7 +164,12 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         "enabled": True,
         "provider": "github-raw",
         "raw_base_url": "https://raw.githubusercontent.com/yume-script/pixiv_ranking/refs/heads/main/",
-        "files": ["pixiv_ranking.py", "settings.html", "settings.css", "requirements.txt", "style.css", "__init__.py", "VERSION"],
+        "files": [
+            "pixiv_ranking.py", "settings.html", "settings.css", "requirements.txt",
+            "index.html", "style.css", "script.js",
+            "dashboard.html", "dashboard.css", "dashboard.js",
+            "__init__.py", "VERSION",
+        ],
         "version_file": "VERSION",
         "version_key": "plugin version",
         "show_sample_update_button": True,
@@ -176,11 +189,35 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
     # (guide_plugins.md에는 없지만 random_gallery 실제 소스로 확인된 계약:
     #  title/icon/order 만 선언하면 되고, 카드 데이터는 get_dashboard_data()를
     #  그대로 재사용함 — 별도 index.html/script.js 불필요)
+    # sessions: "all" -> 일반 도서/성인 서재/오디오북/영상 강좌 4개 세션 전부에 노출.
+    # 픽시브 데이터는 코어 도서 라이브러리와 무관한 외부 콘텐츠라 특정 세션에
+    # 묶일 이유가 없으므로 전체 세션에서 동일하게 동작하도록 열어둔다.
     category_tab = {
         "title": "Pixiv 랭킹",
         "icon": "fa-solid fa-image",
         "order": 92,
-        "sessions": ["adult"],
+        "sessions": "all",
+    }
+
+    # 실제 사용자 홈 대시보드(사용자가 "내 설정 > 홈 화면 플러그인 배치 모드"를 켜고
+    # "+ 위젯 추가" 목록에서 직접 추가했을 때만 노출됨)에 카드로 노출되는 계약.
+    # category_tab의 풀페이지 그리드와 달리, 여기서는 후보 풀 중 무작위로 고른
+    # 이미지 1장만 간단히 보여준다 (limit=1 -> get_dashboard_data가 랜덤 1장 모드로 동작).
+    # 완전한 CSS/이미지가 필요해 dashboard.html/dashboard.css/dashboard.js
+    # (Shadow DOM 격리)를 사용한다.
+    # sessions: "all" -> category_tab과 동일하게 4개 세션 전부의 홈 화면에서 추가 가능.
+    # subtitle을 빈 문자열로 둔 이유: "+ 위젯 추가" 목록/헤더에 설명 문구가 한 줄
+    # 더 얹히는 것도, 위젯 자체 헤더에 제목을 또 넣는 것도 불필요해서(코어가 이미
+    # 카드 상단에 title/제공 표시를 해줌) 순수하게 이미지 카드 하나만 남도록 뺐다.
+    home_widget = {
+        "title": "Pixiv 랭킹",
+        "subtitle": "",
+        "icon": "fa-solid fa-image",
+        "order": 60,
+        "limit": 1,
+        "sessions": "all",
+        "layout": "grid",
+        "size": 1,
     }
 
     # ---- 필수 계약 (대시보드 전용이라 실질 동작 없음) ----
@@ -440,14 +477,21 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
         except (TypeError, ValueError):
             configured_limit = 50
         configured_limit = max(1, min(configured_limit, 50))
+
+        # home_widget.limit을 1로 선언해뒀으므로, limit==1로 호출되면
+        # "그리드 전체"가 아니라 "후보 풀 중 무작위 1장" 모드로 간주한다.
+        # (category_tab/기존 대시보드 카드 호출은 항상 여러 개를 요청하므로 limit>1)
+        is_random_single_call = (limit == 1)
+        # 무작위로 고를 후보 풀은 항상 설정된 표시개수(LIMIT)만큼 확보한다.
+        pool_limit = configured_limit
         effective_limit = min(limit, configured_limit) if limit else configured_limit
 
         logger.warning(
             "[pixiv_ranking] 0/3 설정 로드 완료: mode=%s, content=%s, session=%s,"
-            " 요청 limit=%s, 설정 표시개수=%s, 최종 limit=%s"
+            " 요청 limit=%s, 설정 표시개수=%s, 최종 limit=%s, 랜덤 1장 모드=%s"
             " (드롭다운으로 요청된 값이 있으면 그 값을 우선 사용)",
             mode, content, "설정됨" if session_id else "없음",
-            limit, configured_limit, effective_limit,
+            limit, configured_limit, effective_limit, is_random_single_call,
         )
 
         if not session_id:
@@ -458,7 +502,11 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             }
 
         try:
-            contents = self._fetch_ranking(session_id, mode, content, effective_limit)
+            # 랜덤 1장 모드에서도 후보 풀은 설정된 표시개수만큼 넉넉히 받아와야
+            # 매번 다른 이미지가 뽑힐 수 있다 (limit=1로 조회하면 항상 1위만 나옴).
+            contents = self._fetch_ranking(
+                session_id, mode, content, pool_limit if is_random_single_call else effective_limit
+            )
         except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
             logger.warning("[pixiv_ranking] 중단: 랭킹 조회 실패: %s", e)
             return {"success": False, "error": f"랭킹 조회 실패: {e}"}
@@ -467,7 +515,16 @@ class PixivRankingMetadataProvider(BaseMetadataProvider):
             logger.warning("[pixiv_ranking] 랭킹 결과 0건, 빈 목록 반환")
             return {"success": True, "items": []}
 
-        items = self._build_items(contents, session_id, thumb_size)
+        if is_random_single_call:
+            chosen = random.choice(contents)
+            logger.warning(
+                "[pixiv_ranking] 홈 위젯 랜덤 선택: 후보 %d개 중 rank=%s, title=%s 선택",
+                len(contents), chosen.get("rank"), chosen.get("title"),
+            )
+            items = self._build_items([chosen], session_id, thumb_size)
+        else:
+            items = self._build_items(contents, session_id, thumb_size)
+
         logger.warning(
             "[pixiv_ranking] 3/3 완료: 최종 %d개 항목 반환", len(items),
         )
