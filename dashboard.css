@@ -9,7 +9,10 @@
    높이가 있어야 동작함), 결국 <img>가 원본 비율 그대로(특히 세로로 긴
    망가 페이지 등) 렌더링되며 위젯 전체 높이가 걷잡을 수 없이 커져
    페이지 하단에 스크롤바가 생기는 문제가 있었다. 그래서 부모 높이에
-   의존하지 않는 aspect-ratio로 카드 자체 높이를 고정한다. */
+   의존하지 않는 aspect-ratio로 카드 자체 높이를 고정한다.
+   이미지가 잘리지 않고 항상 전체가 보이도록 object-fit: contain을 쓰며,
+   원본 비율과 카드 비율이 다른 경우 남는 공간은 카드 배경색으로 채워진다
+   (레터박스). */
 
 :host,
 .prw-card {
@@ -33,7 +36,7 @@
 .prw-img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
 }
 
